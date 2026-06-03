@@ -1,0 +1,42 @@
+# Python bytecode and compiled files at all levels
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build & install artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+
+# Compiled C++ extensions (anywhere in the tree)
+*.so
+
+# Git
+.git/
+
+# C++ intermediates
+csrc/*.o
+
+# Test coverage
+.pytest_cache/
+.coverage
+
+# Docker
+.docker/.env
+
+# Local venvs (not tracked)
+.conda/
+env/
+venv/
+
+# OpenCode runtime
+.opencode/node_modules/
+.opencode/package-lock.json
+.opencode/package.json
+
+# Auto-generated files — produced by utils/ scripts
+pyproject.toml
+.docker/docker-compose.yml

@@ -1,0 +1,105 @@
+# CI Release — build wheels via plain Docker, publish to PyPI
+
+name: CI Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If yes, build only — do not publish to PyPI."
+        default: no
+        required: false
+        type: boolean
+
+env:
+  COMPOSE_DOCKER_CLI_BUILD: 1
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  # ── Emit matrix JSON from matrix.yml once ────────────────────────
+  setup-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_json: ${{ steps.parse.outputs.matrix_json }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Parse matrix into GHA strategy JSON
+        id: parse
+        run: |
+          python utils/matrix.py matrix.yml > gh_matrix.json
+          echo "matrix_json=$(cat gh_matrix.json)" >> "$GITHUB_OUTPUT"
+
+  # ── Build wheels via plain docker build + run per matrix entry ───
+  build-wheels:
+    needs: [setup-matrix]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup-matrix.outputs.matrix_json) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Generate pyproject.toml
+        run: python utils/generate-pyproject.py --matrix matrix.yml
+
+      - name: Build image
+        run: |
+          docker build \
+            --build-arg PYTHON_VERSION=${{ matrix.python_version }} \
+            --build-arg PYTORCH_VERSION=${{ matrix.torch_version }} \
+            --build-arg PLATFORM=cpu \
+            -t activationscope:${{ matrix.label }} \
+            -f .docker/Dockerfile .
+
+      - name: Build wheel inside container
+        run: |
+          docker run --name as-build-${{ matrix.label }} \
+            -v ${{ github.workspace }}/dist/pypip-${{ matrix.python_version }}:/src/dist \
+            activationscope:${{ matrix.label }} \
+            bash -c "pip install build && python -m build"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: dist/**/*.whl
+
+  # ── Publish (only on tag or manual) ─────────────────────────────
+  publish-to-pypi:
+    needs: [build-wheels]
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist/
+
+      - name: Publish to PyPI
+        if: github.event_name == 'push' || inputs.dry_run != true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          verbose: true
+
+      - name: Dry-run summary (no publishing)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        run: |
+          echo "DRY-RUN — wheels downloaded in dist/ but NOT published."
+          ls -lR dist/

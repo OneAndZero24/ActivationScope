@@ -1,0 +1,8 @@
+# matrix.yml — Python / PyTorch pairs for CI/CD and local testing.
+# Each entry is one combination for testing & release.
+
+- python_version: "3.8"
+  torch_version: "2.0.1"
+
+- python_version: "3.10"
+  torch_version: "2.5.1"

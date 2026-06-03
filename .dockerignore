@@ -1,0 +1,35 @@
+# Build & install artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+activationscope/_C*.so
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.conda/
+env/
+venv/
+
+# Git
+.git/
+
+# CI & test artifacts
+.pytest_cache/
+.coverage
+
+# Generated files (re-created inside container)
+pyproject.toml
+.docker/docker-compose.yml
+
+# Docker env overrides
+.docker/.env
+
+# OpenCode runtime
+.opencode/node_modules/
+.opencode/package-lock.json
+.opencode/package.json

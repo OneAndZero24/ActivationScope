@@ -1,0 +1,30 @@
+# CI Test Matrix — docker compose, CPU only
+
+name: CI Test Matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  COMPOSE_DOCKER_CLI_BUILD: 1
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Generate docker-compose.yml (CPU)
+        run: python utils/generate-compose.py --matrix matrix.yml
+
+      - name: Run all tests via docker compose
+        working-directory: .docker
+        run: docker compose up

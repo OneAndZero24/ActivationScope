@@ -1,0 +1,15 @@
+name: activationscope-dev
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - cpuonly
+  - pip:
+    - torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+    - pytest>=7.0
+    - setuptools>=68
+    - wheel
+    - build
+    - pyyaml

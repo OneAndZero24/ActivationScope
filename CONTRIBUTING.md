@@ -32,8 +32,8 @@ git clone https://github.com/OneAndZero24/ActivationScope.git
 cd ActivationScope
 
 # 2. Create and activate the development environment (Python 3.9, CPU PyTorch 2.4)
-conda env create -f environment.yml
-conda activate activationscope-dev
+conda env create -f environment.yml -n activationscope 
+conda activate activationscope
 
 # 3. Install in editable mode — this compiles the C++ extension for you
 pip install -e .[dev]
@@ -50,7 +50,7 @@ python -c "import activationscope; print(activationscope.__file__)"
 If you want to test against a newer PyTorch:
 
 ```bash
-pip install torch==2.5.0 --index-url https://download.pytorch.org/whl/cpu
+pip install torch==2.12.0 --index-url https://download.pytorch.org/whl/cpu
 pip install -e .[dev]  # recompile extension against new libtorch headers
 ```
 

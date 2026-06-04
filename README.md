@@ -23,8 +23,8 @@ ActivationScope works at the C++ level by binding to PyTorch's internal forward 
 
 ```bash
 # Set up Conda environment
-conda env create -f environment.yml
-conda activate ActivationScope
+conda env create -f environment.yml -n activationscope 
+conda activate activationscope
 
 # Install package (compiles C++ extension)
 pip install -e .

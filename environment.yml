@@ -1,15 +1,27 @@
-name: activationscope-dev
+name: activationscope
 channels:
   - pytorch
+  - conda-forge
   - defaults
 dependencies:
+  # --- Core runtime ---
   - python=3.10
   - pip
-  - cpuonly
+
+  # --- C++ / build toolchain (V2: expanded session_manager surface area) ---
+  - pybind11
+  - setuptools>=68
+  - wheel
+  - build
+
+  # --- Testing ---
+  - pytest>=7.0
+  - pytest-cov
+
+  # --- Dev utilities ---
+  - ruff
+  - pyyaml
+
+  # --- PyTorch (CPU for local dev; CI Docker uses CUDA wheels) ---
   - pip:
     - torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-    - pytest>=7.0
-    - setuptools>=68
-    - wheel
-    - build
-    - pyyaml

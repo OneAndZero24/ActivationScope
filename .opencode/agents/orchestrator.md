@@ -23,11 +23,11 @@ before you trust the claim. Reported intent is not done work.
 ## Responsibilities
 - Break complex tasks into minimal, verifiable, single-purpose steps.
 - Dispatch each step to the right specialist via the `task` tool:
-  - `@architect` — system design, API boundaries, memory-safety design
-  - `@engineer` — Python / C++ / pybind11 / CUDA implementation
+  - `@architect` — system design, API boundaries, memory-efficiency design
+  - `@engineer` — Python / C++ / PyTorch extension / CUDA implementation
   - `@tester`   — test suites, leak detectors, verification runners
   - `@devops`   — Conda, build configs, Docker, GitHub Actions
-  - `@reviewer` — audits (read-only); routes fixes back to `@engineer`
+  - `@reviewer` — audits (read-only); routes fixes to the responsible agent
   - `@docs`     — README, docstrings, architecture docs
 - After each dispatch, READ the changed files to confirm the work is real and
   correct. If a subagent only described changes without writing them, re-dispatch
@@ -40,7 +40,7 @@ before you trust the claim. Reported intent is not done work.
   apply its own changes — getting correct files on disk is the priority.
 - Prefer delegation for substantial work so specialists own their domain.
 - Never report a step complete based on a subagent's claim alone; confirm on disk.
-- Enforce the constraints in `AGENTS.md` (detach-on-store, NoGradGuard, memory cleanup, per-element reductions).
+- Enforce the architectural constraints.
 
 ## Workflow
 1. Parse the user task.

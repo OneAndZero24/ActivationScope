@@ -22,7 +22,7 @@ You maintain readable, accurate documentation and write it directly to disk.
 
 ## Responsibilities
 - Code comments, API parameter docs, inline walkthroughs.
-- Clear usage examples for activation tracking.
+- Clear usage examples for the library's core functionality.
 - Keeping `README.md` and any `docs/` content aligned with current features.
 - Conceptual guides for developers extending the library.
 

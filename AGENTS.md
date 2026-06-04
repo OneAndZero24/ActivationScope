@@ -19,17 +19,7 @@ The AI engineering team consists of specialized local and cloud models configure
 
 ---
 
-## 2. Universal Code Generation Constraints
-
-No agent may bypass these architectural rules during file updates:
-1. **Detach-on-Store Rule:** Forward hooks operating in `"store"` mode must capture an independent copy of the output via `out.detach().clone()`. This prevents the tracker from holding live references into PyTorch's autograd graph while still preserving tensor data for later inspection. Online-stats mode is unaffected — it only reads scalars/tensors and never retains activation copies.
-2. **No-Grad Safety:** All inline C++ statistics modifications inside `csrc/` *must* run within a `torch::NoGradGuard no_grad;` block to ensure the tracker does not mutate or bloat the training graph.
-3. **Memory Cleanup:** Activations accumulate across batches inside `track()`. The user calls `.clear()` **explicitly** when ready to reset (e.g., after reading out data). Context exit runs `.remove()` for full teardown — hooks detached, activations wiped — so nothing leaks past the block.
-4. **Per-Element Reductions:** Online min/max/mean statistics reduce only over the batch dimension (dim 0). The resulting shape `[C, H, W]` (or `[C, SeqLen]`, etc.) is preserved across forward passes and accumulates element-wise running stats per layer component.
-
----
-
-## 3. Communication & Handoff Protocols
+## 2. Communication & Handoff Protocols
 
 - **Orchestrator is the default entry point.** Unless a specialist is addressed
   directly, every task starts at `@orchestrator`, which decomposes the work and

@@ -26,7 +26,7 @@ gatekeeper — you READ and judge, you do not edit.
 
 ## Responsibilities
 - Memory leaks at the pybind11 / refcount layer.
-- Graph-retention anomalies (missing `NoGradGuard`, uncleared dicts).
+- Graph-retention anomalies (unintended autograd capture, uncleared tensor collections).
 - C++ standard-practice and memory-layout issues.
 - PyTorch API misuse, slow dispatch, needless allocations.
 - Test coverage and result quality vs the core design in `AGENTS.md`.

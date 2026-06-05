@@ -1,110 +1,141 @@
 # ActivationScope
 
-High-performance PyTorch plugin for tracking, storing, and analyzing intermediate neural network activations during training and inference.
+***Jan Miksa @ IDEAS Research Institute***
 
-Built on `libtorch` C++ extensions to bypass dispatching overhead, delivering native-speed activation hooks.
+**High-performance PyTorch activation tracker with storage, reduction, and capture policies for efficient model analysis.**
 
----
-
-## Overview
-
-ActivationScope works at the C++ level by binding to PyTorch's internal forward hook infrastructure. In store mode it captures independent copies via ``out.detach().clone()`` so the tracker never holds live autograd references, and in online mode it reduces per-element statistics over the batch dimension — all without bloat or Python dispatch overhead.
-
-### Operation Modes
-
-| Mode | Description |
-|------|-------------|
-| **Store** | Captures detached clones of activations, safely decoupled from the autograd graph |
-| **Online Max/Min/Mean** | Reduces per-element statistics over batch dim 0 and accumulates across forward passes |
+Built on Python + C++ with native libtorch hooks and `torch.compile` reduction compilation.
 
 ---
 
-## Installation
+## Development Installation
 
 ```bash
-# Set up Conda environment
-conda env create -f environment.yml -n activationscope 
+conda env create -f environment.yml -n activationscope
 conda activate activationscope
 
-# Install package (compiles C++ extension)
 pip install -e .
 ```
 
 ---
 
-## Usage
+## Quick Start
 
-### Store Mode
-
-Captures activations and releases them after the backward pass:
+Every tracked layer stores full activations by default — no registration needed:
 
 ```python
-import torch
-from activationscope import ActivationScope
+import activationscope
 
-model = torch.nn.Sequential(
-    torch.nn.Linear(10, 20),
-    torch.nn.ReLU(),
-    torch.nn.Linear(20, 5),
+with activationscope.ActivationScope().track(model) as tracker:
+    for x, y in dataloader:
+        out = model(x)
+        loss.backward()
+
+acts = tracker.activations  # {layer_name: Tensor} across all batches
+```
+
+---
+
+## Usage 
+
+### StoragePolicy — Where Tensor Data Lives
+
+| Policy      | Behavior                              | When to Use                  |
+|-------------|---------------------------------------|------------------------------|
+| `CPU`       | `.to(kCPU)` during hook (default)     | Standard single-GPU tracking |
+| `GPU`       | Keep on device, transfer at readback  | Diffusion models, avoid PCIe saturation during forward |
+| `AUTO`      | Small tensors → CPU, large → GPU      | Mixed workloads              |
+
+```python
+import activationscope
+
+# Keep activations on GPU during forwards.
+# Readback transfers only when you access .activations.
+tracker = activationscope.ActivationScope(
+    storage=activationscope.StoragePolicy.GPU,
+    capture_policy=activationscope.CapturePolicy.MAX_K,
+    max_batches=50,  # safety rail: stop after N denoising steps
+)
+```
+
+### ReductionPolicy — What Gets Kept vs Reduced
+
+| Policy       | Memory          | Use Case                          |
+|-------------|-----------------|-----------------------------------|
+| `STORE_ALL`  | O(batches × features) | Per-batch analysis, PCA, attention rollout |
+| `STREAMING`  | O(features) | Online statistics only: running mean, max, variance across all batches |
+| `FINAL_ONLY` | O(features), last forward | Debugging minimal overhead      |
+
+```python
+tracker = activationscope.ActivationScope(
+    reduction_policy=activationscope.ReductionPolicy.STREAMING,
+)
+tracker.register_reduction(lambda t: torch.mean(t, dim=0))
+
+with tracker.track(model) as t:
+    for _ in range(1000):  # 1000 batches → still only O(features) memory
+        model(x)
+
+means = t.activations  # [features] per layer, running average
+```
+
+### CapturePolicy — How Often to Capture
+
+| Policy      | Behavior                              | Use Case                            |
+|-------------|---------------------------------------|-------------------------------------|
+| `EVERY`     | Every forward pass (default)          | Standard use                        |
+| `SAMPLE_N`  | Every Nth forward                     | Long training loops, periodic snapshots |
+| `MAX_K`     | Stop after K batches per layer        | Safety rail against OOM             |
+
+```python
+# Hard cap: capture first 50 forwards per layer, then stop — prevents OOM.
+tracker = activationscope.ActivationScope(
+    capture_policy=activationscope.CapturePolicy.MAX_K,
+    max_batches=50,
 )
 
-tracker = ActivationScope(mode="store")
-with tracker.track() as activations:
-    output = model(x)
-    loss = criterion(output, target)
-    loss.backward()
-# activations are automatically cleared on exit
+# Sample every 10th forward (captures 10% of passes).
+# Note: can alias with periodic data (e.g., diffusion denoising steps).
+tracker = activationscope.ActivationScope(
+    capture_policy=activationscope.CapturePolicy.SAMPLE_N,
+    sample_every=10,
+)
 ```
 
-### Online Mode
+### Layer Filtering
 
-Computes running statistics in C++ with no memory overhead:
+Use fnmatch patterns to track only specific submodules:
 
 ```python
-from activationscope import ActivationScope, get_max_stats, clear_online_stats
-
-model = torch.nn.Linear(10, 20)
-tracker = ActivationScope(mode="online_max")
-tracker.attach(model, {"fc": model})
-
-output = model(x)
-print(get_max_stats())  # {'fc': <max activation value>}
-
-clear_online_stats()
+with activationscope.ActivationScope().track(
+    model,
+    include=[".*attn.*", "*.attention.*"],   # track only attention layers
+    exclude=[".*bias.*"],                     # skip bias tensors
+) as t:
+    out = model(x)
 ```
 
----
+### Custom Reductions
 
-## Architecture
+Any callable is compiled at registration (`torch.compile` preferred, `torch.jit.script` fallback):
 
-- **`csrc/hooks.cpp`** — Native PyTorch hooks running under `torch::NoGradGuard`. Online stats reduce over the batch dimension (dim 0), preserving per-element shape `[C, H, W]` across forward passes. Running mean is tracked incrementally via a Welford-style update.
-- **`activationscope/tracker.py`** — Python wrapper with context manager support for safe activation lifecycle management. Store mode captures ``out.detach().clone()`` so the tracker never holds live autograd references.
-- **C++/Python boundary** — Detached clones in store mode; per-element tensor state mutation in online mode. Neither path retains live graph references.
+```python
+tracker = activationscope.ActivationScope()
+tracker.register_reduction(
+    lambda t: torch.std(t, dim=0),           # per-element std dev
+    layers=["encoder.layer.0"],
+)
 
----
+with tracker.track(model) as t:
+    out = model(x)
 
-## Development
-
-### Local testing
-
-```bash
-# Quick test against your current environment
-pytest tests/ -v --tb=short
-
-# Full matrix test across all combos (CPU)
-scripts/run_tests.sh
-
-# Full matrix test with CUDA support
-scripts/run_tests.sh --platform cu124
+stds = t.activations  # compiled reduction runs in C++ every forward
 ```
 
-### Matrix-driven build system
+### Convenience Constructors
 
-The compatibility matrix lives in `matrix.yml` at the repo root. From it, two artifacts are auto-generated:
-
-| Script | Output | Description |
-|--------|--------|-------------|
-| `python utils/pyproject.py` | `pyproject.toml` | Fill-in template with versions from matrix |
-| `python utils/generate-compose.py` | `.docker/docker-compose.yml` | Docker Compose services for testing |
-
-Both outputs are git-ignored and regenerated before each CI run. There are no hardcoded version floors or classifier logic — everything derives from `matrix.yml`.
+```python
+activationscope.ActivationScope.for_mean(layers=["linear1"])
+activationscope.ActivationScope.for_max(layers=["conv1"])
+activationscope.ActivationScope.for_min(layers=["conv1"])
+```

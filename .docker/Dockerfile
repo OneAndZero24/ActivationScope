@@ -1,7 +1,7 @@
 # ActivationScope Dockerfile
 
-ARG PYTHON_VERSION=3.8
-ARG PYTORCH_VERSION=2.0.1
+ARG PYTHON_VERSION=3.10
+ARG PYTORCH_VERSION=2.5.1
 ARG PLATFORM=cpu
 
 FROM python:${PYTHON_VERSION}-slim
@@ -25,4 +25,4 @@ RUN pip install --upgrade pip setuptools wheel && \
 
 COPY tests/ ./tests/
 
-CMD ["pytest", "tests/", "-v"]
+CMD ["pytest", "tests/", "-v", "-x", "--tb=short"]

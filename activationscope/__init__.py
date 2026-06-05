@@ -1,17 +1,15 @@
-"""Public API for ActivationScope."""
+"""Public API for ActivationScope v2 (session-scoped, zero-copy, native hooks)."""
 
 from activationscope.tracker import (
     ActivationScope,
-    get_max_stats,
-    get_min_stats,
-    get_mean_stats,
-    clear_online_stats,
+    StoragePolicy,
+    ReductionPolicy,
+    CapturePolicy,
 )
 
 __all__ = [
     "ActivationScope",
-    "get_max_stats",
-    "get_min_stats",
-    "get_mean_stats",
-    "clear_online_stats",
+    "StoragePolicy",
+    "ReductionPolicy",
+    "CapturePolicy",
 ]

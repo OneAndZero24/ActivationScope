@@ -4,7 +4,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  # --- Core runtime ---
+  # --- Core runtime (set to 3.8 for minimum-compatible builds) ---
   - python=3.10
   - pip
 
@@ -17,11 +17,14 @@ dependencies:
   # --- Testing ---
   - pytest>=7.0
   - pytest-cov
+  - pytest-benchmark
 
   # --- Dev utilities ---
   - ruff
   - pyyaml
 
   # --- PyTorch (CPU for local dev; CI Docker uses CUDA wheels) ---
+  # To switch to CUDA for GPU development, replace "cpu" with your CUDA version:
+  #   e.g. torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
   - pip:
     - torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu

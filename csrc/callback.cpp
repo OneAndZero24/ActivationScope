@@ -13,7 +13,7 @@
  *   6. Mutex-guarded accumulation into ActivationAccumulator vector
  */
 
-#include "core.hpp"
+#include "callback.hpp"
 #include "session.hpp"
 
 namespace activationscope {

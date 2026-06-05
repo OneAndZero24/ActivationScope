@@ -8,6 +8,7 @@
  */
 
 #include "compiled_fn.hpp"
+#include "gil_utils.hpp"
 
 #include <torch/extension.h>  // provides pybind11 + torch tensor bridge
 
@@ -28,8 +29,8 @@ torch::Tensor CompiledFnHandle::execute(torch::Tensor tensor) const {
     CompiledCallableStorage* storage = static_cast<CompiledCallableStorage*>(m_handle);
     if (!storage || !storage->fn) return tensor;
 
-    // Acquire GIL — hooks may fire without it in eager mode dispatch.
-    PyGILState_STATE gstate = PyGILState_Ensure();
+    // Acquire GIL via RAII — hooks may fire without it in eager mode dispatch.
+    GilStateGuard gil_guard;
 
     torch::Tensor result = tensor;  // identity fallback on any error
     try {
@@ -38,11 +39,20 @@ torch::Tensor CompiledFnHandle::execute(torch::Tensor tensor) const {
         pybind11::object fn_obj = pybind11::reinterpret_borrow<pybind11::object>(handle);
         pybind11::object result_obj = fn_obj(tensor);
         result = result_obj.cast<torch::Tensor>();
+    } catch (const std::exception& ex) {
+        TORCH_WARN("Compiled reduction failed for tensor "
+                  "(device={}, shape={}). Falling back to identity. Reason: {}",
+                  tensor.device(), tensor.sizes(), ex.what());
+        // Clear any pending Python exception so we don't poison the interpreter state.
+        PyErr_Clear();
     } catch (...) {
-        /* Swallow — return identity tensor.  Errors surface at registration time. */
+        TORCH_WARN("Compiled reduction threw unknown exception for tensor "
+                  "(device={}, shape={}). Falling back to identity.",
+                  tensor.device(), tensor.sizes());
+        PyErr_Clear();
     }
 
-    PyGILState_Release(gstate);
+    // GIL released automatically by GilStateGuard destructor.
     return result;
 }
 

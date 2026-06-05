@@ -8,6 +8,7 @@
 
 #include "session.hpp"
 #include "hook_register.hpp"
+#include "gil_utils.hpp"
 #include <Python.h>
 #include <pybind11/pybind11.h>
 
@@ -161,9 +162,9 @@ void session_register_hooks(uint64_t id, uintptr_t module_ptr,
     void* module_py_obj = reinterpret_cast<void*>(module_ptr);
 
     /* Ensure GIL is held before calling into pybind11 (hooks fire w/o GIL). */
-    PyGILState_STATE gstate = PyGILState_Ensure();
-    register_hooks_on_module(module_py_obj, state, layer_key, capture_dir_int);
-    PyGILState_Release(gstate);
+    activationscope::ensure_gil_and_call([module_py_obj, state, layer_key = std::string(layer_key), capture_dir_int]() {
+        register_hooks_on_module(module_py_obj, state, layer_key, capture_dir_int);
+    });
 }
 
 void session_set_layer_reduction(uint64_t id, const std::string& layer_name,

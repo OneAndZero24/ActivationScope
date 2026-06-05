@@ -12,7 +12,7 @@
 
 #include "hook_register.hpp"
 #include "session.hpp"
-#include "core.hpp"
+#include "callback.hpp"
 #include <torch/extension.h>
 #include <pybind11/pybind11.h>
 #include <Python.h>

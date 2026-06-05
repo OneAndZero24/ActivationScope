@@ -2,18 +2,27 @@
  * ActivationScope - CompiledFnHandle: opaque wrapper around a torch.compile()d
  * graph callable.  Header-only.
  *
- * In practice the compiled handle is stored as an intrusive_ptr to an ATen
- * FuncTorchCompiledAutogradFunction (or similar) but we only need to be able to
- * execute it via at::functionalize / torch::jit dispatch.  To keep the boundary
- * simple, Python materialises the compiled callable and transfers its underlying
- * `torch::jit::ScriptFunction` (or equivalent) through pybind11 as a raw pointer.
+ * Architecture rationale — why we call back through Python (PyObject* round-trip)
+ * instead of keeping the compiled graph entirely in C++:
  *
- * Since torch.compile() returns a Callable with no stable ABI for native C++ use,
- * we take a pragmatic approach: the compiled function is executed by calling back
- * through a thin C-ABI thunk that holds an `PyObject*` reference to the compiled
- * callable.  This avoids needing to decode FX graphs at compile time while still
- * keeping hot-path overhead minimal (one PyCFunction call, no GIL release needed
- * because torch.compile output runs under eager mode).
+ *   1. torch.compile() returns an _orchestration_ object (TorchFunctions, FX graph,
+ *      aot_autern dispatch tree) that has no stable C++ ABI across PyTorch versions.
+ *      Attempting to decode the compiled graph at build time would require parsing
+ *      internal ATen/FuncTorch structures and break on every torch minor release.
+ *
+ *   2. The PyObject* round-trip is acceptable because:
+ *        - GIL is acquired inside execute(), which lives outside the critical hot
+ *          path (the reduction dispatch in callback.cpp already runs under a NoGradGuard
+ *          with lock-free early-exit checks before calling execute()).
+ *        - compile()d callables run eagerly (no graph re-building), so each invoke
+ *          is roughly equivalent to calling a pre-fused kernel wrapper.
+ *        - The fallback-on-error path (log warning + identity) ensures forward passes
+ *          never abort due to corrupted or mismatched compiled handles.
+ *
+ * In practice the compiled handle stores an `PyObject*` to the torch.compile()d
+ * callable reference-counted in CompiledCallableStorage.  execute() performs a
+ * lightweight PyGILState_Ensure / pybind11 round-trip, invokes the callable with
+ * the tensor argument, and casts the result back to torch::Tensor.
  */
 
 #pragma once

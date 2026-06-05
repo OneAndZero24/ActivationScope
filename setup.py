@@ -10,7 +10,7 @@ here = os.path.abspath(os.path.dirname(__file__))
 sources = [
     os.path.join(here, "csrc", "bindings.cpp"),       # PYBIND11_MODULE entry point
     os.path.join(here, "csrc", "compiled_fn.cpp"),     # CompiledFnHandle execute / reset
-    os.path.join(here, "csrc", "core.cpp"),            # hook_callback hot path (C++ only)
+    os.path.join(here, "csrc", "callback.cpp"),        # hook_callback hot path (C++ only)
     os.path.join(here, "csrc", "hook_register.cpp"),   # register via Python module API + thunk
     os.path.join(here, "csrc", "session.cpp"),         # session lifecycle + global registry
     os.path.join(here, "csrc", "capture_policy.cpp"),  # capture cadence policy

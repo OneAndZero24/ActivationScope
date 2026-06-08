@@ -46,12 +46,36 @@ void register_hooks_on_module(void* module_py_ptr, SessionState* state,
     auto register_forward_output = [&]() -> void* {
         // Forward hook signature: hook(module, args_tuple_or_tensor, output_tensor)
         // We want the OUTPUT tensor (3rd positional arg).
+        // Output can be a single tensor OR a tuple (e.g., MultiheadAttention, LSTM).
         auto thunk = py::cpp_function([state, layer_key](
                 py::object /*module*/,           // arg 0 — module reference
                 const py::object& /*inputs*/,    // arg 1 — (input_tuple,) or single tensor
-                const torch::Tensor& output)     // arg 2 — the forward pass output tensor
+                const py::object& output_obj)    // arg 2 — the forward pass output (tensor or tuple)
             {
-            activationscope::hook_callback(state, layer_key, output);
+            torch::Tensor output_tensor;
+
+            // Handle both single tensor and tuple outputs
+            PyObject* out_ptr = output_obj.ptr();
+            if (PyTuple_Check(out_ptr)) {
+                // Unpack tuple — take the first element (the actual output tensor).
+                // MultiheadAttention returns (output, attention_weights),
+                // LSTM returns (output, (hidden, cell)).
+                py::tuple tup = output_obj.cast<py::tuple>();
+                if (tup.size() > 0) {
+                    py::object first = tup[0];
+                    if (py::isinstance<torch::Tensor>(first)) {
+                        output_tensor = first.cast<torch::Tensor>();
+                    } else {
+                        return;  // Not a tensor, skip capture
+                    }
+                } else {
+                    return;  // empty tuple, nothing to capture
+                }
+            } else {
+                // Single tensor output.
+                output_tensor = output_obj.cast<torch::Tensor>();
+            }
+            activationscope::hook_callback(state, layer_key, output_tensor);
         }, py::call_guard<py::gil_scoped_release>());
 
         py::object hook_obj = module_py.attr("register_forward_hook")(thunk);

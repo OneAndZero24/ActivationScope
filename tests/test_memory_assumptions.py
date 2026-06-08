@@ -47,10 +47,10 @@ class TestStoreAllGrowth:
             for _ in range(20):
                 _ = simple_linear_model(torch.randn(4, 10))
 
-        acts = t.activations
-        total_tensors = sum(len(v) for v in acts.values())
-        # With 3 layers × 20 forwards, we expect ~60 total tensors
-        assert total_tensors == 60, f"Expected 60 tensors under STORE_ALL, got {total_tensors}"
+            acts = t.activations
+            total_tensors = sum(len(v) for v in acts.values())
+            # With 3 layers × 20 forwards, we expect ~60 total tensors
+            assert total_tensors == 60, f"Expected 60 tensors under STORE_ALL, got {total_tensors}"
 
 
 class TestStreamingBounded:
@@ -76,7 +76,7 @@ class TestFinalOnlyBounded:
             for _ in range(100):
                 _ = simple_linear_model(torch.randn(4, 10))
 
-        acts = t.activations
+            acts = t.activations
         for layer_name, tensor_list in acts.items():
             assert len(tensor_list) <= 1, \
                 f"Layer {layer_name} should have at most 1 under FINAL_ONLY, got {len(tensor_list)}"
@@ -96,7 +96,7 @@ class TestMaxKBounded:
             for _ in range(50):  # Way more than K=5
                 _ = simple_linear_model(torch.randn(4, 10))
 
-        acts = t.activations
+            acts = t.activations
         for layer_name, tensor_list in acts.items():
             assert len(tensor_list) <= 5, \
                 f"Layer {layer_name} should have at most 5 under MAX_K(5), got {len(tensor_list)}"

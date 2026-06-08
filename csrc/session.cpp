@@ -143,6 +143,24 @@ void session_clear(uint64_t id) {
     }
 }
 
+void session_detach_hooks(uint64_t id) {
+    SessionState* state = SessionState::get(id);
+    if (!state) return;
+
+    // Detach hooks: call handle.remove() on each hook object.
+    for (auto& [key, handle_ptr] : state->m_hook_handles) {
+        if (!handle_ptr) continue;
+        PyObject* handle = reinterpret_cast<PyObject*>(handle_ptr);
+        PyObject* method = PyObject_GetAttrString(handle, "remove");
+        if (method && PyCallable_Check(method)) {
+            PyObject_CallObject(method, nullptr);
+            Py_DECREF(method);
+        }
+        Py_XDECREF(handle);
+    }
+    state->m_hook_handles.clear();
+}
+
 void session_register_hooks(uint64_t id, uintptr_t module_ptr,
                            const std::string& layer_key, int32_t capture_dir_int) {
     SessionState* state = SessionState::get(id);
@@ -152,10 +170,13 @@ void session_register_hooks(uint64_t id, uintptr_t module_ptr,
     {
         auto& cfg = state->layer_configs[layer_key];
         cfg.capture_dir = static_cast<CaptureDir>(capture_dir_int);
-        if (cfg.counter.policy == CapturePolicy::EVERY && state->sample_every > 1) {
-            cfg.counter.policy = CapturePolicy::SAMPLE_N;
-            cfg.counter.sample_every = state->sample_every;
-        }
+        // Propagate session-level capture policy to per-layer counter.
+        CapturePolicy cap_policy = CapturePolicy::EVERY;
+        if (state->max_batches > 0) cap_policy = CapturePolicy::MAX_K;
+        else if (state->sample_every > 1) cap_policy = CapturePolicy::SAMPLE_N;
+        cfg.counter.policy = cap_policy;
+        cfg.counter.sample_every = state->sample_every;
+        cfg.counter.max_batches = state->max_batches;
     }
 
     // Cast module_ptr back to PyObject* and register hooks via pybind11.

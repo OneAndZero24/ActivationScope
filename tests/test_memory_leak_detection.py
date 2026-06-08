@@ -34,18 +34,22 @@ class TestCppSessionDestroy:
         sid = t.session_id
         t.remove()
 
-        # Accessing session_readback on dead session should raise or return empty
-        with pytest.raises(Exception):  # RuntimeError or similar from C++
-            _C.session_readback(sid)
+        # Accessing session_readback on dead session returns empty dict
+        result = _C.session_readback(sid)
+        assert result == {}, f"Expected empty dict for destroyed session, got {result}"
 
-    def test_session_destroyed_after_context_exit(self, simple_linear_model):
-        """track() context manager guarantees destroy on exit."""
+    def test_session_survives_after_context_exit(self, simple_linear_model):
+        """track() context manager keeps the session alive for reuse."""
         t = ActivationScope()
         with t.track(simple_linear_model):
-            sid = t.session_id
             _ = simple_linear_model(torch.randn(2, 10))
 
-        # After context exit, session_id property should raise
+        # After context exit, session_id should still be accessible
+        sid = t.session_id
+        assert sid > 0
+
+        # But remove() still destroys it
+        t.remove()
         with pytest.raises(RuntimeError, match="session already destroyed"):
             _ = t.session_id
 
@@ -133,14 +137,14 @@ class TestAutogradGraphNotRetained:
             loss = out.sum()
             loss.backward()
 
-        acts = t.activations
-        for layer_name, tensor_list in acts.items():
-            for tensor in tensor_list:
-                assert tensor.grad_fn is None, \
-                    f"Layer {layer_name} tensor retains grad graph via grad_fn"
-                # Also check .grad is None (detached tensors have no .grad)
-                assert not tensor.requires_grad, \
-                    f"Layer {layer_name} tensor still requires grad"
+            acts = t.activations
+            for layer_name, tensor_list in acts.items():
+                for tensor in tensor_list:
+                    assert tensor.grad_fn is None, \
+                        f"Layer {layer_name} tensor retains grad graph via grad_fn"
+                    # Also check .grad is None (detached tensors have no .grad)
+                    assert not tensor.requires_grad, \
+                        f"Layer {layer_name} tensor still requires grad"
 
     def test_no_graph_retention_cpu_storage(self):
         """CPU-storage path must also detach properly."""
@@ -159,11 +163,11 @@ class TestAutogradGraphNotRetained:
             loss = out.sum()
             loss.backward()
 
-        acts = t.activations
-        for layer_name, tensor_list in acts.items():
-            for tensor in tensor_list:
-                assert tensor.grad_fn is None, \
-                    f"CPU stored {layer_name} retains grad graph"
+            acts = t.activations
+            for layer_name, tensor_list in acts.items():
+                for tensor in tensor_list:
+                    assert tensor.grad_fn is None, \
+                        f"CPU stored {layer_name} retains grad graph"
 
     def test_multiple_backwards_no_graph(self):
         """After multiple forward+backward cycles, no graph leaks."""
@@ -181,11 +185,11 @@ class TestAutogradGraphNotRetained:
                     if p.grad is not None:
                         p.grad.zero_()
 
-        acts = t.activations
-        for name, ts_list in acts.items():
-            for tensor in ts_list:
-                assert tensor.grad_fn is None, \
-                    f"Layer {name} retained graph after 10 backward passes"
+            acts = t.activations
+            for name, ts_list in acts.items():
+                for tensor in ts_list:
+                    assert tensor.grad_fn is None, \
+                        f"Layer {name} retained graph after 10 backward passes"
 
 
 class TestMemoryReclamationAfterDestroy:

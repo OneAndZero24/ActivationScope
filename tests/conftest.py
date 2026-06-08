@@ -66,7 +66,7 @@ def transformer_block():
             super().__init__()
             self.d_model = d_model
             self.self_attn = torch.nn.MultiheadAttention(
-                d_model=d_model, num_heads=nhead, batch_first=True
+                embed_dim=d_model, num_heads=nhead, batch_first=True
             )
             self.linear1 = torch.nn.Linear(d_model, dim_feedforward)
             self.linear2 = torch.nn.Linear(dim_feedforward, d_model)

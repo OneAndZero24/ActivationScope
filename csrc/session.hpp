@@ -106,6 +106,10 @@ std::unordered_map<std::string, std::vector<torch::Tensor>> session_readback(uin
 /// Clear all accumulated activations (hook stays active, counters reset).
 void     session_clear(uint64_t id);
 
+/// Detach hooks from modules but *keep* the session alive for reuse.
+/// Used by track() context manager exit (not by remove()).
+void     session_detach_hooks(uint64_t id);
+
 /// Register native hooks on a module for the given layer key + capture direction.
 void     session_register_hooks(uint64_t id, uintptr_t module_ptr,
                                const std::string& layer_key, int32_t capture_dir_int);

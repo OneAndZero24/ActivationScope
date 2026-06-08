@@ -32,8 +32,8 @@ class TestTupleOutputModel:
             x_indices = torch.randint(0, 50, (3, 5))  # [batch=3, seq=5]
             out, (h, c) = lstm_tuple_model(x_indices)
 
-        acts = t.activations
-        assert "lstm_hidden_proj" in acts or "output_proj" in acts, \
+            acts = t.activations
+            assert "lstm_hidden_proj" in acts or "output_proj" in acts, \
             f"Should have captured at least one layer, got keys: {acts.keys()}"
 
     def test_track_all_layers_tuple_model(self, lstm_tuple_model):
@@ -44,8 +44,8 @@ class TestTupleOutputModel:
             x_indices = torch.randint(0, 50, (2, 4))
             _ = lstm_tuple_model(x_indices)
 
-        acts = t.activations
-        assert len(acts) >= 3, \
+            acts = t.activations
+            assert len(acts) >= 3, \
             f"Should capture embedding + proj layers, got only {len(acts)}: {acts.keys()}"
 
     def test_tuple_model_forward_backward(self, lstm_tuple_model):
@@ -67,7 +67,7 @@ class TestTupleOutputModel:
                 x_indices = torch.randint(0, 50, (2, 4))
                 _ = lstm_tuple_model(x_indices)
 
-        acts = t.activations
+            acts = t.activations
         for name, ts_list in acts.items():
             assert len(ts_list) <= 1
 
@@ -83,7 +83,7 @@ class TestResidualModel:
             x = torch.randn(4, 16)
             _ = residual_model(x)
 
-        acts = t.activations
+            acts = t.activations
         # Should capture fc1, act1, fc2, fc3, act2, fc_out
         assert len(acts) >= 5, \
             f"Residual model should track all non-container layers, got {acts.keys()}"
@@ -114,7 +114,7 @@ class TestResidualModel:
             for _ in range(8):
                 _ = residual_model(torch.randn(4, 16))
 
-        acts = t.activations
+            acts = t.activations
         for name, ts_list in acts.items():
             assert len(ts_list) == 8, \
                 f"Residual layer {name} should have 8 tensors"
@@ -140,7 +140,7 @@ class TestDeepModel:
             x = torch.randn(2, 32)
             _ = deep_model(x)
 
-        acts = t.activations
+            acts = t.activations
         # Should have many layers (ModuleList children of layers + acts lists)
         assert len(acts) >= 10, \
             f"Deep model should track many layers, got {len(acts)}: {acts.keys()}"
@@ -167,7 +167,7 @@ class TestDeepModel:
             for _ in range(20):
                 _ = deep_model(torch.randn(2, 32))
 
-        acts = t.activations
+            acts = t.activations
         for name, ts_list in acts.items():
             assert len(ts_list) <= 3, \
                 f"Deep layer {name} should be capped at 3, got {len(ts_list)}"
@@ -180,7 +180,7 @@ class TestDeepModel:
         with t.track(deep_model, include=["layers.*"]):
             _ = deep_model(torch.randn(2, 32))
 
-        acts = t.activations
+            acts = t.activations
         for name in acts:
             assert "layers." in name, \
                 f"Should only have layers. prefix, got {name}"
@@ -192,7 +192,7 @@ class TestDeepModel:
         with t.track(deep_model, exclude=["acts.*"]):
             _ = deep_model(torch.randn(2, 32))
 
-        acts = t.activations
+            acts = t.activations
         for name in acts:
             assert "acts." not in name
 
@@ -208,7 +208,7 @@ class TestMixedContainerModel:
             x = torch.randn(2, 10)
             _ = mixed_container_model(x)
 
-        acts = t.activations
+            acts = t.activations
         # Should capture encoder and decoder layer children (not the containers)
         has_encoder = any("encoder" in k for k in acts)
         has_decoder = any("decoder" in k for k in acts)
@@ -222,7 +222,7 @@ class TestMixedContainerModel:
         with t.track(mixed_container_model, include=["blocks.encoder.*"]):
             _ = mixed_container_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         for name in acts:
             assert "encoder" in name, \
                 f"Should only have encoder layers, got {name}"
@@ -249,7 +249,7 @@ class TestNestedSequentialModel:
             x = torch.randn(2, 10)
             _ = nested_sequential_model(x)
 
-        acts = t.activations
+            acts = t.activations
         # Should have stack.0.0 (Linear), stack.0.1 (ReLU), stack.1.0, stack.1.1, head
         assert len(acts) >= 5, \
             f"Should track nested layers, got only {len(acts)}: {acts.keys()}"
@@ -261,7 +261,7 @@ class TestNestedSequentialModel:
         with t.track(nested_sequential_model, include=["stack.*.0"]):
             _ = nested_sequential_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         for name in acts:
             assert name.endswith(".0"), \
                 f"Should only have .0 suffix (first Linear in each seq), got {name}"
@@ -337,8 +337,8 @@ class TestActualLSTM:
             out = model(x)
             assert out.shape == (3, 10)
 
-        acts = t.activations
-        assert "embedding" in acts or "fc" in acts
+            acts = t.activations
+            assert "embedding" in acts or "fc" in acts
 
     def test_lstm_backward(self):
         """forward+backward through LSTM wrapper with tracking."""
@@ -373,8 +373,8 @@ class TestAttentionModel:
             x = torch.randn(2, 8, 64)
             _ = transformer_block(x)
 
-        acts = t.activations
-        assert len(acts) > 0
+            acts = t.activations
+            assert len(acts) > 0
 
     def test_transformer_with_reductions(self, transformer_block):
         """Register different reductions for attention vs FF layers."""

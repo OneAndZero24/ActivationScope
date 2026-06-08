@@ -90,8 +90,8 @@ class TestTransformerE2E:
             loss = out.sum()
             loss.backward()
 
-        # Verify captured tensors don't retain the graph
-        acts = t.activations
+            # Verify captured tensors don't retain the graph
+            acts = t.activations
         for name, ts_list in acts.items():
             for tensor in ts_list:
                 assert tensor.grad_fn is None, f"{name} retains grad graph"
@@ -169,8 +169,8 @@ class TestSimulatedTrainingLoop:
                 loss = nn.functional.cross_entropy(out, target)
                 loss.backward()
 
-        # Every captured tensor must be detached (no grad_fn chain)
-        acts = t.activations
+            # Every captured tensor must be detached (no grad_fn chain)
+            acts = t.activations
         for name, ts_list in acts.items():
             for tensor in ts_list:
                 assert tensor.grad_fn is None, \

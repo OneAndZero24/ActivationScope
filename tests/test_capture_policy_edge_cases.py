@@ -32,7 +32,7 @@ class TestSampleNEdgeCases:
             for _ in range(8):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         for name, ts_list in acts.items():
             assert len(ts_list) == 8, \
                 f"Layer {name} should capture all 8 with sample_every=1"
@@ -48,7 +48,7 @@ class TestSampleNEdgeCases:
             for _ in range(5):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         # Should capture at most floor(5/100) + 1 = 1 or so depending on impl
         for name, ts_list in acts.items():
             assert len(ts_list) <= 2, \
@@ -65,7 +65,7 @@ class TestSampleNEdgeCases:
             for _ in range(12):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         # FINAL_ONLY means at most 1 tensor per layer regardless of sampling
         for name, ts_list in acts.items():
             assert len(ts_list) <= 1
@@ -85,7 +85,7 @@ class TestMaxKEdgeCases:
             for _ in range(20):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         for name, ts_list in acts.items():
             assert len(ts_list) == 20, \
                 f"Layer {name} should capture all 20 with max_batches=0"
@@ -101,7 +101,7 @@ class TestMaxKEdgeCases:
             for _ in range(20):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         for name, ts_list in acts.items():
             assert len(ts_list) == 1, \
                 f"Layer {name} should have exactly 1 with max_batches=1"
@@ -247,8 +247,8 @@ class TestMultipleTrackers:
             with t_act.track(simple_linear_model, include=["act"]):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-            acts_fc = t_fc.activations
-            acts_act = t_act.activations
+                acts_fc = t_fc.activations
+                acts_act = t_act.activations
 
             # fc tracker should have fc layers, not act
             for name in acts_fc:
@@ -325,8 +325,8 @@ class TestCaptureDirectionWithPolicies:
         with t.track(simple_linear_model, layers=["fc1"], capture=capture_dir):
             _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
-        assert "fc1" in acts
+            acts = t.activations
+            assert "fc1" in acts
 
     def test_capture_both_shape_check(self, conv_model):
         """With both mode, conv layer captures inputs and outputs."""
@@ -334,5 +334,5 @@ class TestCaptureDirectionWithPolicies:
         with t.track(conv_model, layers=["conv1"], capture="both"):
             _ = conv_model(torch.randn(2, 3, 16, 16))
 
-        acts = t.activations
-        assert "conv1" in acts
+            acts = t.activations
+            assert "conv1" in acts

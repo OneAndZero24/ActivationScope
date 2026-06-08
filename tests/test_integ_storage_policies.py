@@ -19,7 +19,7 @@ class TestStorageCPU:
         with t.track(simple_linear_model):
             _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         for layer_name, tensor_list in acts.items():
             for tensor in tensor_list:
                 assert tensor.device.type == "cpu", \
@@ -39,7 +39,7 @@ class TestStorageGPU:
         with t.track(simple_linear_model):
             _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         assert len(acts) > 0
 
 

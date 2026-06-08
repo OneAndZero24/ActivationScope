@@ -155,8 +155,8 @@ class TestMultipleAttachCycles:
 
     def test_reuse_after_remove(self, simple_linear_model):
         """After remove(), .attach() can be called again on same tracker."""
-        t = ActivationScope()
         for _ in range(3):
+            t = ActivationScope()
             t.attach(simple_linear_model)
             x = torch.randn(2, 10)
             _ = simple_linear_model(x)

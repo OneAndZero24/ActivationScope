@@ -19,7 +19,7 @@ class TestStoreAll:
             for _ in range(5):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         # Every tracked layer should have a tensor per forward pass
         for layer_name, tensor_list in acts.items():
             assert len(tensor_list) == 5, \
@@ -31,7 +31,7 @@ class TestStoreAll:
         with t.track(simple_linear_model):
             _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         # fc1: Linear(10→20), output [2, 20]
         assert acts["fc1"][0].shape == (2, 20)
         # act: ReLU passes through → shape still [2, 20]
@@ -63,7 +63,7 @@ class TestFinalOnly:
             for _ in range(5):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
+            acts = t.activations
         for layer_name, tensor_list in acts.items():
             assert len(tensor_list) <= 1, \
                 f"Layer {layer_name} should have at most 1 tensor under FINAL_ONLY"

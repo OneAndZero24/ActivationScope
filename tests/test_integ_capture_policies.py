@@ -20,11 +20,11 @@ class TestCaptureEvery:
             for _ in range(5):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
-        # Under STORE_ALL + EVERY, each layer should have exactly 5 tensors
-        for layer_name, tensor_list in acts.items():
-            assert len(tensor_list) == 5, \
-                f"Layer {layer_name} should have 5 tensors under EVERY, got {len(tensor_list)}"
+            acts = t.activations
+            # Under STORE_ALL + EVERY, each layer should have exactly 5 tensors
+            for layer_name, tensor_list in acts.items():
+                assert len(tensor_list) == 5, \
+                    f"Layer {layer_name} should have 5 tensors under EVERY, got {len(tensor_list)}"
 
 
 class TestCaptureSampleN:
@@ -37,12 +37,12 @@ class TestCaptureSampleN:
             for _ in range(9):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
-        # Some layers may have slightly different counts depending on C++ impl
-        # but generally should be < 9 (not all captured)
-        for layer_name, tensor_list in acts.items():
-            assert len(tensor_list) <= 5, \
-                f"Layer {layer_name} should not capture all 9 forwards"
+            acts = t.activations
+            # Some layers may have slightly different counts depending on C++ impl
+            # but generally should be < 9 (not all captured)
+            for layer_name, tensor_list in acts.items():
+                assert len(tensor_list) <= 5, \
+                    f"Layer {layer_name} should not capture all 9 forwards"
 
     def test_sample_every_2(self, simple_linear_model):
         """With sample_every=2 and 6 forwards → ≈3 captured."""
@@ -51,10 +51,10 @@ class TestCaptureSampleN:
             for _ in range(6):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
-        # Should have captured fewer than all 6 forwards
-        for layer_name, tensor_list in acts.items():
-            assert len(tensor_list) <= 4
+            acts = t.activations
+            # Should have captured fewer than all 6 forwards
+            for layer_name, tensor_list in acts.items():
+                assert len(tensor_list) <= 4
 
 
 class TestCaptureMaxK:
@@ -67,10 +67,10 @@ class TestCaptureMaxK:
             for _ in range(10):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
-        for layer_name, tensor_list in acts.items():
-            assert len(tensor_list) <= 3, \
-                f"Layer {layer_name} should have at most 3 tensors under MAX_K(3)"
+            acts = t.activations
+            for layer_name, tensor_list in acts.items():
+                assert len(tensor_list) <= 3, \
+                    f"Layer {layer_name} should have at most 3 tensors under MAX_K(3)"
 
     def test_max_k_no_limit(self, simple_linear_model):
         """When max_batches=0 (unlimited), all forwards are captured."""
@@ -79,10 +79,10 @@ class TestCaptureMaxK:
             for _ in range(5):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
-        for layer_name, tensor_list in acts.items():
-            assert len(tensor_list) == 5, \
-                f"Layer {layer_name} should capture all 5 when max_batches=0"
+            acts = t.activations
+            for layer_name, tensor_list in acts.items():
+                assert len(tensor_list) == 5, \
+                    f"Layer {layer_name} should capture all 5 when max_batches=0"
 
 
 class TestBatchCountVerification:
@@ -99,9 +99,9 @@ class TestBatchCountVerification:
             for _ in range(n_forwards):
                 _ = simple_linear_model(torch.randn(2, 10))
 
-        acts = t.activations
-        total_tensors = sum(len(v) for v in acts.values())
-        assert total_tensors > 5, "Should have accumulated many tensors"
+            acts = t.activations
+            total_tensors = sum(len(v) for v in acts.values())
+            assert total_tensors > 5, "Should have accumulated many tensors"
 
 
 class TestCaptureWithConvModel:
@@ -113,7 +113,7 @@ class TestCaptureWithConvModel:
         with t.track(conv_model, include=["conv*", "pool"]):
             _ = conv_model(torch.randn(1, 3, 16, 16))
 
-        acts = t.activations
-        assert "conv1" in acts
-        # Conv2d(3,8,3,padding=1) on [1,3,16,16] → [1,8,16,16]
-        assert acts["conv1"][0].shape[0] == 1
+            acts = t.activations
+            assert "conv1" in acts
+            # Conv2d(3,8,3,padding=1) on [1,3,16,16] → [1,8,16,16]
+            assert acts["conv1"][0].shape[0] == 1

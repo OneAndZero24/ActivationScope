@@ -43,6 +43,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("id"),
         "Clear activations + reset batch counters (hooks stay active).");
 
+  m.def("session_detach_hooks", &activationscope::session_detach_hooks,
+        py::arg("id"),
+        "Detach all hooks from modules; keep session alive for reuse.");
+
   /* ── Hook registration ─────────────────────────────────────────── */
 
   m.def("session_register_hooks", &activationscope::session_register_hooks,

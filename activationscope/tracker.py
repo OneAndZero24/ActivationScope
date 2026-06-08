@@ -16,11 +16,23 @@ import activationscope._C as _C
 
 # ──────────── Policy enums (mirror C++ enum values) ──────────────
 
-class StoragePolicy(int):
+class _PolicyMeta(type):
+    """Metaclass that makes policy classes iterable and subscriptable."""
+
+    def __iter__(cls):
+        return iter(cls._members_)
+
+    def __class_getitem__(cls, item):
+        return cls._members_[item]
+
+
+class StoragePolicy(int, metaclass=_PolicyMeta):
     """Where tensor data lives after capture."""
     AUTO = 0    # Heuristic: < threshold → CPU, ≥ threshold → GPU
     CPU  = 1    # Blocking transfer to host memory
     GPU  = 2    # Stay on original device
+
+    _members_ = (AUTO, CPU, GPU)
 
 
 class ReductionPolicy(int):
@@ -30,11 +42,13 @@ class ReductionPolicy(int):
     FINAL_ONLY = 2  # Last-batch activation overwrites previous
 
 
-class CapturePolicy(int):
+class CapturePolicy(int, metaclass=_PolicyMeta):
     """When and how often hooks fire."""
     EVERY    = 0  # Every forward fires hooks
     SAMPLE_N = 1  # Captures every Nth forward
     MAX_K    = 2  # Captures exactly K batches then stops
+
+    _members_ = (EVERY, SAMPLE_N, MAX_K)
 
 # ──────────── ActivationScope class ──────────────────────────────
 
@@ -207,11 +221,11 @@ class ActivationScope:
         exclude: Optional[List[str]] = None,
         capture: str = "output",
     ) -> Generator["ActivationScope", Any, None]:
-        """Context manager: attach → yield self → full teardown.
+        """Context manager: attach → yield self → detach hooks + clear.
 
         Activations accumulate across all forward passes inside the block.
-        On exit, hooks are removed AND activations are cleared regardless of
-        prior state.
+        On exit, hooks are removed and activations are cleared, but the session
+        survives so ``track()`` can be called again on the same tracker.
 
         Parameters
         ----------
@@ -228,12 +242,17 @@ class ActivationScope:
         capture : str
             One of ``"output"`` (default), ``"input"``, or ``"both"``.
         """
+        self.clear()   # Remove leftover activations from any prior track() call.
         self.attach(model, layers=layers, include=include, exclude=exclude,
                     capture=capture)
         try:
             yield self
         finally:
-            self.remove()
+            # Detach hooks so next forward doesn't accumulate, but leave
+            # accumulated data intact so the caller can read .activations
+            # after the context exits.
+            if self._session_id is not None:
+                _C.session_detach_hooks(self._session_id)
 
     def attach(
         self,
@@ -389,18 +408,38 @@ def _select_layers(
 
     patterns = layers if include is None else include
     if patterns:
-        # Intersection: only keep modules that match at least one pattern
+        # Intersection: only keep modules that match at least one pattern.
+        # Match against module name (e.g. "fc1"), module class name
+        # (e.g. "Linear"), and the compound "name.classname" form
+        # (e.g. "fc1.Linear") so patterns like "*.Linear*" work.
         selected = {
             name: mod for name, mod in selected.items()
-            if any(fnmatch(name, pat) for pat in patterns)
+            if any(
+                fnmatch(name, pat)
+                or fnmatch(type(mod).__name__, pat)
+                or fnmatch(f"{name}.{type(mod).__name__}", pat)
+                for pat in patterns
+            )
         }
 
     if exclude:
-        # Subtractive: remove matches
+        # Subtractive: remove matches (same composite matching).
         selected = {
             name: mod for name, mod in selected.items()
-            if not any(fnmatch(name, pat) for pat in exclude)
+            if not any(
+                fnmatch(name, pat)
+                or fnmatch(type(mod).__name__, pat)
+                or fnmatch(f"{name}.{type(mod).__name__}", pat)
+                for pat in exclude
+            )
         }
+
+    # Edge case: model is a leaf module with no non-container submodules
+    # at all (e.g., ``torch.nn.Linear`` on its own).  Only include the model
+    # itself when it literally has no children to track.
+    if not selected and not isinstance(model, containers):
+        if len(list(model.children())) == 0:
+            selected = {"": model}
 
     return selected
 

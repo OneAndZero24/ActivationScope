@@ -12,4 +12,5 @@ This folder contains detailed documentation for using the ActivationScope librar
 - [Layer Filtering](layerfiltering.md) – Include / exclude patterns.
 - [Custom Reductions](customreductions.md) – Registering user‑provided reductions.
 - [Convenience Constructors](convenience.md) – Built‑in mean / max / min helpers.
+- [SVD Activation Analysis](svdanalysis.md) – Online & offline SVD decomposition of layer activations for dimensionality reduction, interpretability, and protection‑loss workflows.
 - [Advanced Usage](advanced.md) – Input/output capture, parameter snapshotting, torch.compile usage, zero‑copy guarantees.

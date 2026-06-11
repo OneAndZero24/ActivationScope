@@ -22,6 +22,7 @@ enum class StoragePolicy : int32_t {
     AUTO = 0,   ///< Heuristic: < threshold → CPU (pinned if use_pinned), ≥ threshold → GPU
     CPU  = 1,   ///< Blocking transfer to host memory (or async if use_pinned)
     GPU  = 2,   ///< Stay on original device; defer transfer to readback
+    DISK = 3,   ///< Stream tensors directly to disk; bypass in-memory accumulation
 };
 
 /// What gets kept vs reduced across batches.

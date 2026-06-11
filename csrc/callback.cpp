@@ -10,13 +10,48 @@
  *   3. Reduction dispatch  (per-layer → global fallback → identity)
  *   4. .detach() — sever autograd edges (owner → C++ session)
  *   5. Storage policy — device placement (GPU / CPU / AUTO heuristic, pinned option)
- *   6. Mutex-guarded accumulation into ActivationAccumulator vector
+ *   6. For DISK: stream tensor directly to .pt file on disk, bypass RAM
+ *      For others: mutex-guarded accumulation into ActivationAccumulator vector
  */
 
 #include "callback.hpp"
 #include "session.hpp"
 
+#include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <sys/stat.h>
+
 namespace activationscope {
+
+/* ── Helpers ─────────────────────────────────────────────────────── */
+
+/// Sanitize a layer name into a filesystem-safe directory name.
+/// Must match the version in session.cpp for consistent reading.
+static std::string sanitize_layer_name(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (char c : raw) {
+        if (c == '/' || c == '\\' || c == ':' || c == '?' || c == '*') {
+            out += '_';
+        } else if (c == '.') {
+            out += '_';
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+/// Create directory (and parents) if it doesn't exist.
+/// Returns true on success or if already exists.
+static bool ensure_dir(const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+        return true;
+    return (mkdir(path.c_str(), 0700) == 0);
+}
 
 /* ── Storage policy: device placement logic ─────────────────────────── */
 
@@ -30,7 +65,9 @@ static torch::Tensor apply_storage_policy(torch::Tensor tensor,
             // Stay on original device — nothing to do after detach.
             return tensor;
 
-        case StoragePolicy::CPU: {
+        case StoragePolicy::CPU:
+        case StoragePolicy::DISK: {
+            // DISK needs tensors on CPU before serialization.
             if (tensor.is_cuda()) {
                 if (use_pinned) {
                     // Async DMA via pinned memory — non-blocking.
@@ -103,6 +140,9 @@ void hook_callback(SessionState* state, const std::string& layer_key,
 
     // ── (5) Storage policy — device placement ───────────────────────
     StoragePolicy effective = cfg.effective_storage();
+    if (effective == StoragePolicy::AUTO) {
+        effective = state->default_storage;   // merge with session-level default
+    }
     torch::Tensor stored = apply_storage_policy(
         std::move(result),
         effective,
@@ -110,7 +150,49 @@ void hook_callback(SessionState* state, const std::string& layer_key,
         state->use_pinned
     );
 
-    // ── (6) Accumulate under mutex — minimal scope ──────────────────
+    // ── (6) Accumulate — DISK path or in-memory path ─────────────────
+    if (effective == StoragePolicy::DISK && !state->session_dir.empty()) {
+        // ── DISK mode: write tensor directly to .dat file, bypass RAM ──
+
+        // Ensure tensor is on CPU and contiguous for serialization.
+        torch::Tensor cpu_tensor = stored.to(torch::kCPU).contiguous();
+
+        // Sanitize layer name for filesystem path.
+        std::string safe_name = sanitize_layer_name(layer_key);
+
+        // Build output path: <session_dir>/<safe_layer_name>/NNNNNN.dat
+        std::string layer_dir = state->session_dir + "/" + safe_name;
+        ensure_dir(layer_dir);
+
+        // Get a monotonically-increasing batch index for this layer.
+        int64_t batch_idx = cfg.disk_batch_idx.fetch_add(1, std::memory_order_relaxed);
+
+        std::ostringstream fname;
+        fname << layer_dir << "/" << std::setw(8) << std::setfill('0') << batch_idx << ".dat";
+        std::string filepath = fname.str();
+
+        // Raw binary format: [dtype: int64][ndim: int64][dim0..dimN: int64][raw data bytes]
+        // Fast, GIL-free, no TorchScript overhead.
+        std::ofstream ofs(filepath, std::ios::binary | std::ios::trunc);
+        if (ofs.is_open()) {
+            int64_t dtype = static_cast<int64_t>(cpu_tensor.scalar_type());
+            int64_t ndim  = cpu_tensor.dim();
+            ofs.write(reinterpret_cast<const char*>(&dtype), sizeof(int64_t));
+            ofs.write(reinterpret_cast<const char*>(&ndim), sizeof(int64_t));
+            for (int64_t i = 0; i < ndim; i++) {
+                int64_t dim = cpu_tensor.size(i);
+                ofs.write(reinterpret_cast<const char*>(&dim), sizeof(int64_t));
+            }
+            ofs.write(reinterpret_cast<const char*>(cpu_tensor.data_ptr()),
+                      cpu_tensor.numel() * cpu_tensor.element_size());
+            ofs.close();
+        }
+
+        // No in-memory accumulation — tensor data lives only on disk.
+        return;
+    }
+
+    // ── In-memory path: accumulate under mutex — minimal scope ───────
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         auto& accum = state->accum_data[layer_key];   // default-construct if absent

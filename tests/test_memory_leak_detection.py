@@ -295,3 +295,42 @@ class TestTracemallocStability:
         net_growth = sum(s.size_diff for s in stats if s.size_diff > 0)
         assert net_growth < 200_000, \
             f"Accumulated {net_growth} bytes despite clear() each iteration"
+
+
+class TestCppHeapLeak:
+    """Detect C++ heap leaks by measuring physical memory (RSS) across
+    many create/destroy cycles.  Python's tracemalloc only tracks
+    Python-allocator calls — it is blind to C++ ``new``/``delete``.
+    Physical RSS growth across hundreds of repeated sessions would
+    indicate a C++ leak."""
+
+    def test_rss_stable_across_100_cycles(self, simple_linear_model):
+        import psutil
+
+        proc = psutil.Process()
+        model = simple_linear_model
+
+        # Stabilise: warm up allocators, trigger GC
+        for _ in range(3):
+            t = ActivationScope(storage=StoragePolicy.CPU)
+            with t.track(model):
+                _ = model(torch.randn(4, 10))
+            del t
+        gc.collect()
+
+        rss_start = proc.memory_info().rss
+
+        for i in range(100):
+            t = ActivationScope(storage=StoragePolicy.CPU)
+            with t.track(model):
+                for _ in range(5):
+                    _ = model(torch.randn(4, 10))
+            del t
+            if i % 25 == 0:
+                gc.collect()
+        gc.collect()
+
+        rss_end = proc.memory_info().rss
+        growth_mib = (rss_end - rss_start) / (1024 * 1024)
+        assert growth_mib < 10, \
+            f"RSS grew by {growth_mib:.1f} MiB across 100 cycles — possible C++ leak"

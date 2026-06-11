@@ -1,19 +1,17 @@
 """ActivationScope build configuration using PyTorch C++ extensions."""
 
-import os
 import platform
-from setuptools import setup, Extension
+from setuptools import setup
 
 from torch.utils.cpp_extension import BuildExtension, CppExtension
 
-here = os.path.abspath(os.path.dirname(__file__))
 sources = [
-    os.path.join(here, "csrc", "bindings.cpp"),       # PYBIND11_MODULE entry point
-    os.path.join(here, "csrc", "compiled_fn.cpp"),     # CompiledFnHandle execute / reset
-    os.path.join(here, "csrc", "callback.cpp"),        # hook_callback hot path (C++ only)
-    os.path.join(here, "csrc", "hook_register.cpp"),   # register via Python module API + thunk
-    os.path.join(here, "csrc", "session.cpp"),         # session lifecycle + global registry
-    os.path.join(here, "csrc", "capture_policy.cpp"),  # capture cadence policy
+    "csrc/bindings.cpp",        # PYBIND11_MODULE entry point
+    "csrc/compiled_fn.cpp",     # CompiledFnHandle execute / reset
+    "csrc/callback.cpp",        # hook_callback hot path (C++ only)
+    "csrc/hook_register.cpp",   # register via Python module API + thunk
+    "csrc/session.cpp",         # session lifecycle + global registry
+    "csrc/capture_policy.cpp",  # capture cadence policy
 ]
 
 extra_compile_args = {"cxx": ["-O2", "-std=c++17"]}
@@ -27,7 +25,7 @@ if platform.system() == "Darwin":
 cpp_extension = CppExtension(
     name="activationscope._C",
     sources=sources,
-    include_dirs=[os.path.join(here, "csrc")],
+    include_dirs=["csrc"],
     extra_compile_args=extra_compile_args,
 )
 

@@ -5,7 +5,6 @@ Three independently tunable policy knobs govern every aspect of memory
 and compute behavior (see StoragePolicy, ReductionPolicy, CapturePolicy).
 """
 
-import sys
 from contextlib import contextmanager
 from fnmatch import fnmatch
 from typing import Callable, Dict, Generator, List, Optional, Any
@@ -31,8 +30,9 @@ class StoragePolicy(int, metaclass=_PolicyMeta):
     AUTO = 0    # Heuristic: < threshold → CPU, ≥ threshold → GPU
     CPU  = 1    # Blocking transfer to host memory
     GPU  = 2    # Stay on original device
+    DISK = 3    # Stream directly to disk; bypass in-memory accumulation
 
-    _members_ = (AUTO, CPU, GPU)
+    _members_ = (AUTO, CPU, GPU, DISK)
 
 
 class ReductionPolicy(int):
@@ -65,8 +65,9 @@ class ActivationScope:
 
     * **Three policy knobs** control memory/compute independently:
 
-        * ``StoragePolicy``  (AUTO, CPU, GPU) — where data lives after detach.
+        * ``StoragePolicy``  (AUTO, CPU, GPU, DISK) — where data lives after detach.
           Pinned-memory modifier enables async DMA for AUTO/CPU legs.
+          DISK mode streams tensors directly to .pt files, bypassing RAM entirely.
         * ``ReductionPolicy`` (STORE_ALL, STREAMING, FINAL_ONLY) — what gets
           kept vs. reduced across batches.
         * ``CapturePolicy``   (EVERY, SAMPLE_N, MAX_K) — capture cadence
@@ -99,6 +100,7 @@ class ActivationScope:
         max_batches: int = 0,
         auto_cpu_threshold_bytes: int = 1_048_576,   # 1 MiB
         use_pinned: bool = False,
+        session_dir: Optional[str] = None,  # DISK mode: where to store .dat files
     ):
         self._storage: int = int(storage)
         self._reduction: int = int(reduction)
@@ -114,6 +116,7 @@ class ActivationScope:
             max_batches=_max_batches,
             auto_cpu_threshold_bytes=auto_cpu_threshold_bytes,
             use_pinned=use_pinned,
+            session_dir=session_dir or "",
         )
 
         # Per-layer registered reductions: pattern → (compiled_fn_handle, layer_names)
@@ -139,12 +142,33 @@ class ActivationScope:
 
         Returned tensors are **read-only views**.  To mutate safely, call
         ``tensor.clone()`` first.
+
+        In DISK storage mode, tensors are loaded from .dat files on disk
+        rather than read from in-memory C++ vectors.
         """
         if self._session_id is None:
             raise RuntimeError(
                 "session already destroyed — cannot read activations. "
                 "Re-attach hooks via .attach() or .track()."
             )
+
+        # DISK mode: read tensors from raw binary .dat files on disk.
+        if self._storage == int(StoragePolicy.DISK):
+            disk_map = _C.session_readback_disk(self._session_id)
+            result: Dict[str, List[torch.Tensor]] = {}
+            for layer_name, file_paths in disk_map.items():
+                tensors = []
+                for fpath in file_paths:
+                    try:
+                        t = _load_raw_tensor(fpath)
+                        tensors.append(t)
+                    except Exception:
+                        pass
+                if tensors:
+                    result[layer_name] = tensors
+            return result
+
+        # Standard in-memory readback path.
         raw = _C.session_readback(self._session_id)
 
         # Convert C++ map → Python dict.  TensorImpls are shared (zero-copy).
@@ -476,3 +500,68 @@ def pattern_or_identity(fn: Callable[..., Any]) -> str:
     global default path.
     """
     return getattr(fn, "__name__", repr(fn))
+
+
+def _load_raw_tensor(filepath: str) -> torch.Tensor:
+    """Load a tensor from the raw binary .dat format written by the C++ DISK path.
+
+    File layout (all little-endian int64):
+        [dtype: int64][ndim: int64][dim0..dimN: int64][raw data bytes]
+
+    This matches the format produced by callback.cpp's write path.
+    """
+    import struct
+    import numpy as np
+
+    with open(filepath, "rb") as f:
+        # Read header: dtype, ndim
+        header = f.read(16)
+        if len(header) < 16:
+            raise ValueError(f"Truncated .dat file: {filepath}")
+        dtype_code, ndim = struct.unpack("<qq", header)
+
+        # Read shape
+        shape = []
+        for _ in range(ndim):
+            dim_bytes = f.read(8)
+            if len(dim_bytes) < 8:
+                raise ValueError(f"Truncated shape in .dat file: {filepath}")
+            dim, = struct.unpack("<q", dim_bytes)
+            shape.append(dim)
+
+        # Read raw data
+        data = f.read()
+
+    # Map int64 dtype code back to torch dtype
+    # Map ATen ScalarType int to torch dtype (C++ enum: Byte=0, Char=1, ..., Float=6, ...)
+    dtype_map = {
+        0: torch.uint8,     1: torch.int8,      2: torch.int16,
+        3: torch.int32,     4: torch.int64,     5: torch.float16,
+        6: torch.float32,   7: torch.float64,   8: torch.complex64,
+        9: torch.complex64, 10: torch.complex128, 11: torch.bool,
+        12: torch.qint8,    13: torch.quint8,   14: torch.qint32,
+        15: torch.bfloat16,
+    }
+    torch_dtype = dtype_map.get(dtype_code, torch.float32)
+
+    np_array = np.frombuffer(data, dtype=torch_to_numpy_dtype(torch_dtype))
+    tensor = torch.from_numpy(np_array.copy().reshape(shape))
+    return tensor.contiguous()
+
+
+def torch_to_numpy_dtype(torch_dtype: torch.dtype):
+    """Convert torch dtype to numpy dtype for buffer reading."""
+    import numpy as np
+    dtype_map = {
+        torch.float32: np.float32,
+        torch.float64: np.float64,
+        torch.float16: np.float16,
+        torch.bfloat16: np.uint16,  # bfloat16 stored as uint16
+        torch.int8: np.int8,
+        torch.int16: np.int16,
+        torch.int32: np.int32,
+        torch.int64: np.int64,
+        torch.uint8: np.uint8,
+        torch.bool: np.bool_,
+    }
+    return dtype_map.get(torch_dtype, np.float32)

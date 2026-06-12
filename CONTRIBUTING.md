@@ -8,7 +8,7 @@ Thank you for considering a contribution! This file provides a concise overview 
 2. **Set up the development environment** – see the step‑by‑step instructions in `docs/development/setup.md`.
 3. **Install the package in editable mode** (this also builds the native C++ extension):
    ```bash
-   pip install -e .[dev]
+   python -m pip install -e .[dev] --no-build-isolation
    ```
 
 ## Building the extension
@@ -19,7 +19,7 @@ The C++ backend is compiled automatically during the editable install. For a cle
 
 Run the full test suite locally with:
 ```bash
-pytest -v
+python -m pytest -v
 ```
 For the exhaustive CI matrix (Docker‑based testing across many Python/PyTorch versions), refer to `docs/development/testing.md`.
 
@@ -39,7 +39,7 @@ We enforce:
 
 1. Create a feature branch off the latest `main`.
 2. Write clear, concise commit messages that follow the Conventional Commits spec.
-3. Ensure the full test suite passes locally (`pytest -v`).
+3. Ensure the full test suite passes locally (`python -m pytest -v`).
 4. Push your branch and open a PR on GitHub.
 5. The CI will run automatically; address any failures before merging.
 

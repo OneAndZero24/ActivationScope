@@ -3,10 +3,13 @@
 ActivationScope includes a **pytest** suite that validates functionality, memory safety, and policy interactions.
 
 ## Running the Full Test Suite Locally
+To execute the tests within your active Conda environment, run:
 ```bash
-# Execute all tests in the current environment
-pytest -v
+python -m pytest -v
 ```
+> [!TIP]
+> Running `python -m pytest` instead of just `pytest` ensures that the tests run using the exact python interpreter and package dependencies of your active Conda environment, preventing path conflicts (e.g. running a pyenv or globally-installed `pytest` version).
+
 This will run:
 - Unit tests (`test_unit_*.py`)
 - Integration tests (`test_integ_*.py`)

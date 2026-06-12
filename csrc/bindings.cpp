@@ -83,15 +83,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("id"), py::arg("compiled_handle"),
         "Set session-wide default compiled reduction for unmatched layers.");
 
-  /* ── Parameter snapshotting (C++-stored mode) ───────────────────── */
-
-  m.def(
-      "capture_parameters",
-      [](std::unordered_map<std::string, torch::Tensor> params) {
-        // Already built on Python side; this is a no-op stub that validates
-        // the map layout.  Actual snapshotting lives in tracker.py.
-        return params.size();
-      },
-      py::arg("params"),
-      "Validate parameter snapshot dict (returns key count).");
 }
+

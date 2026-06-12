@@ -3,8 +3,9 @@
 import yaml
 import json
 import argparse
+from typing import List, Dict
 
-def load(path: str) -> list[dict[str, str]]:
+def load(path: str) -> List[Dict[str, str]]:
     """Read *path* (matrix.yml) and return a list of combos.
 
     Each combo is ``{'python_version': '3.X', 'torch_version': 'Y.Y.Z'}``.

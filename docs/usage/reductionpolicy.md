@@ -13,7 +13,7 @@
 
 Reductions follow a **stateful** contract: `(accumulator, new_tensor) -> updated_accumulator`. Both arguments are views into C++‑owned tensor storage. On the first call, `accumulator` is `None`; the reduction initialises from `new_tensor`. On subsequent calls, it merges `new_tensor` into the accumulator and returns the updated result.
 
-Reductions are compiled with `torch.compile` (fallback to `torch.jit.script`) for near‑native speed.
+Reductions are compiled with `torch.jit.script` and loaded as TorchScript modules by the C++ backend for near‑native speed with zero GIL on the hot path.
 
 ```python
 import activationscope, torch

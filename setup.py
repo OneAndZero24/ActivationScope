@@ -7,11 +7,12 @@ from torch.utils.cpp_extension import BuildExtension, CppExtension
 
 sources = [
     "csrc/bindings.cpp",        # PYBIND11_MODULE entry point
-    "csrc/compiled_fn.cpp",     # CompiledFnHandle execute / reset
+    "csrc/reduction.cpp",       # TorchScript reduction wrapper (zero‑GIL)
     "csrc/callback.cpp",        # hook_callback hot path (C++ only)
     "csrc/hook_register.cpp",   # register via Python module API + thunk
     "csrc/session.cpp",         # session lifecycle + global registry
     "csrc/capture_policy.cpp",  # capture cadence policy
+    "csrc/utils.cpp",           # helper utilities
 ]
 
 extra_compile_args = {"cxx": ["-O2", "-std=c++17"]}

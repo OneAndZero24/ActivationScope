@@ -1,13 +1,9 @@
 /*
- * ActivationScope - Session-scoped state management declarations.
+ * ActivationScope — Session-scoped state management.
  *
- * Each Python ActivationScope instance owns exactly one C++ SessionState, keyed
- * by an atomic uint64_t counter.  The global registry is a std::unordered_map
- * that maps session IDs to unique_ptr<SessionState>.  All public entry points
- * (create, destroy, readback, clear, hook registration) operate through this
- * header.
+ * Each Python ActivationScope instance owns one C++ SessionState, keyed
+ * by an atomic uint64_t counter in a global registry.
  */
-
 #pragma once
 
 #include <atomic>
@@ -21,134 +17,84 @@
 
 #include "accumulator.hpp"
 #include "capture_policy.hpp"
-#include "compiled_fn.hpp"
 #include "datastructures.hpp"
-
-namespace torch {
-namespace nn {
-class Module;
-}
-} // namespace torch
+#include "reduction.hpp"
 
 namespace activationscope {
 
-/* ── Per-layer hook configuration ───────────────────────────────────── */
-
+/* ── Per-layer hook configuration ─────────────────────────── */
 struct LayerHookConfig {
-  /// Capture direction (immutable after attach).
-  CaptureDir capture_dir = CaptureDir::OUTPUT;
+    CaptureDir   capture_dir      = CaptureDir::OUTPUT;
+    StoragePolicy storage_override = StoragePolicy::AUTO;
+    CaptureCounter counter;
 
-  /// Per-layer storage override; StoragePolicy::AUTO means "use session
-  /// default".
-  StoragePolicy storage_override = StoragePolicy::AUTO;
+    /// Reduction loaded from TorchScript .pt file (nullptr → identity).
+    std::shared_ptr<Reduction> reduction;
 
-  /// Effective storage policy after merge with session-level defaults.
-  StoragePolicy effective_storage() const;
+    /// Monotonically-increasing batch index for DISK storage mode.
+    std::atomic<int64_t> disk_batch_idx{0};
 
-  /// Atomic batch counter for SAMPLE_N / MAX_K enforcement.
-  CaptureCounter counter;
-
-  /// Per-layer compiled reduction handle (null → try global fallback).
-  std::unique_ptr<CompiledFnHandle> reduce_fn = nullptr;
-
-  /// Monotonically-increasing batch index for DISK storage mode.
-  /// Incremented atomically inside hook_callback before each disk write.
-  std::atomic<int64_t> disk_batch_idx{0};
+    StoragePolicy effective_storage() const {
+        return storage_override != StoragePolicy::AUTO
+                   ? storage_override
+                   : StoragePolicy::AUTO;
+    }
 };
 
-/* ── Session state — single source of truth per tracker instance ─────── */
-
+/* ── Session state — single source of truth per tracker ────── */
 struct SessionState {
-  // -- Policy knobs (set at creation, immutable) --------------------
-  StoragePolicy default_storage = StoragePolicy::AUTO;
-  ReductionPolicy reduction = ReductionPolicy::STORE_ALL;
-  int64_t sample_every = 1;
-  int64_t max_batches = 0; // 0 == unlimited
+    StoragePolicy   default_storage         = StoragePolicy::AUTO;
+    ReductionPolicy reduction_policy        = ReductionPolicy::STORE_ALL;
+    int64_t         sample_every            = 1;
+    int64_t         max_batches             = 0;
+    int64_t         auto_cpu_threshold_bytes = 1048576; // 1 MiB
+    bool            use_pinned              = false;
+    CaptureMode     capture_mode            = CaptureMode::REFERENCE;
+    std::string     session_dir;
 
-  // -- AUTO heuristic threshold (bytes) ----------------------------
-  int64_t auto_cpu_threshold_bytes = 1048576; // 1 MiB default
+    std::unordered_map<std::string, LayerHookConfig>               layer_configs;
+    std::unordered_map<std::string, std::shared_ptr<LayerAccumulator>> accum_data;
+    std::unordered_map<std::string, std::vector<std::string>>      disk_paths;
 
-  // -- Pinned-memory modifier for GPU→CPU transfers ----------------
-  bool use_pinned = false;
+    std::mutex mutex; // guards accum_data, layer_configs, disk_paths
 
-  // -- Capture mode — detach-only vs detach+clone ------------------
-  CaptureMode capture_mode = CaptureMode::REFERENCE;
+    using HookHandlePtr = void*;
+    std::vector<std::pair<std::string, HookHandlePtr>> m_hook_handles;
 
-  // -- Disk storage mode --------------------------------------------
-  /// Root directory for per-layer .pt files when storage=DISK.
-  /// Created in session_create, cleaned up in release().
-  std::string session_dir;
-
-  // -- Per-layer configuration -------------------------------------
-  std::unordered_map<std::string, LayerHookConfig> layer_configs;
-
-  // -- Accumulated tensor storage ----------------------------------
-  std::unordered_map<std::string, ActivationAccumulator> accum_data;
-
-  // -- Global default reduction handle (fallback for unmatched layers)
-  std::unique_ptr<CompiledFnHandle> global_reduce_fn = nullptr;
-
-  // -- Thread safety -----------------------------------------------
-  std::mutex mutex; ///< Guards accum_data map access only.
-
-  // -- Hook handles for teardown -----------------------------------
-  // Each entry stores a raw pointer to the torch::nn::ModuleHook object
-  // returned by libtorch's register_forward_hook / register_forward_pre_hook.
-  // We store as std::shared_ptr because libtorch uses intrusive_ptr internally
-  // and we need the hook to live as long as the session.
-  using HookHandlePtr = void *; ///< Opaque pybind11-managed hook handle
-  std::vector<std::pair<std::string, HookHandlePtr>> m_hook_handles;
-
-  // -- Public factory / teardown ------------------------------------
-
-  /// Look up session by ID (internal helper).
-  static SessionState *get(uint64_t id);
-
-  /// Release all storage, drop hooks, destroy reduction handles.
-  void release();
+    static SessionState* get(uint64_t id);
+    void release();
 };
 
-/* ── Global registry API (exposed via bindings.cpp) ──────────────────── */
+/* ── Global registry API ─────────────────────────────────── */
 
-/// Create a new session and return its unique ID.
 uint64_t session_create(StoragePolicy storage, ReductionPolicy reduction,
                         int64_t sample_every, int64_t max_batches,
                         int64_t auto_cpu_threshold_bytes, bool use_pinned,
-                        const std::string &session_dir = "",
+                        const std::string& session_dir = "",
                         CaptureMode capture_mode = CaptureMode::REFERENCE);
 
-/// Destroy the session (drops hooks, clears vectors).  No-op if ID invalid.
 void session_destroy(uint64_t id);
 
-/// Zero-copy readback: for each layer return a fresh vector<Tensor> list.
 std::unordered_map<std::string, std::vector<torch::Tensor>>
 session_readback(uint64_t id);
 
-/// Clear all accumulated activations (hook stays active, counters reset).
-void session_clear(uint64_t id);
-
-/// Detach hooks from modules but *keep* the session alive for reuse.
-/// Used by track() context manager exit (not by remove()).
-void session_detach_hooks(uint64_t id);
-
-/// Register native hooks on a module for the given layer key + capture
-/// direction.
-void session_register_hooks(uint64_t id, uintptr_t module_ptr,
-                            const std::string &layer_key,
-                            int32_t capture_dir_int);
-
-/// Attach a per-layer compiled reduction handle (layer may use fnmatch
-/// pattern).
-void session_set_layer_reduction(uint64_t id, const std::string &layer_name,
-                                 void *compiled_handle);
-
-/// Set the global default compiled reduction for unmatched layers.
-void session_set_global_reduction(uint64_t id, void *compiled_handle);
-
-/// Read activations back from disk (storage=DISK mode only).
-/// Returns a dict mapping each layer directory to a list of .pt file paths on
-/// disk.
 std::unordered_map<std::string, std::vector<std::string>>
 session_readback_disk(uint64_t id);
+
+void session_clear(uint64_t id);
+void session_detach_hooks(uint64_t id);
+
+/// Pre-initialise an accumulator for stateful reductions (e.g. SVD second pass).
+/// Writes *tensor* as the sole entry in the per-layer accumulator so that the
+/// reduction's first call sees an existing state instead of None.
+void session_init_accumulator(uint64_t id, const std::string& layer_key,
+                              torch::Tensor tensor);
+
+/// Register native hooks on a module.  reduction_path is a .pt file
+/// compiled via torch.jit.script; empty string → identity reduction.
+void session_register_hooks(uint64_t id, uintptr_t module_ptr,
+                            const std::string& layer_key,
+                            int32_t capture_dir_int,
+                            const std::string& reduction_path = "");
 
 } // namespace activationscope

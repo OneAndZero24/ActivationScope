@@ -202,10 +202,11 @@ class TestRegisterReduction:
         fn = ActivationScope.mean_reduction()
         x = torch.randn(4, 8)
         result = fn(None, x)
-        assert result.shape == (8,)
+        # Shape is [features + 1] — count embedded as last element
+        assert result.shape == (9,)
         y = torch.randn(4, 8)
         result2 = fn(result, y)
-        assert result2.shape == (8,)
+        assert result2.shape == (9,)
 
 
 class TestAttachAfterDestroy:

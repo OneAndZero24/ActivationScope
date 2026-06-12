@@ -1,8 +1,8 @@
 """ActivationScope core tracker implementation.
 
 Session-scoped, zero-copy activation tracking via a native C++ backend.
-Three independently tunable policy knobs govern every aspect of memory
-and compute behavior (see ``activationscope.policies``).
+TorchScript-compiled reductions run entirely in C++ — zero GIL, zero Python
+on the forward hot path.
 """
 
 from contextlib import contextmanager
@@ -16,8 +16,7 @@ from activationscope.utils import (
     parse_capture_dir,
     pattern_or_identity,
     select_layers,
-    try_compile,
-    warmup,
+    export_reduction,
     load_raw_tensor,
 )
 
@@ -29,21 +28,17 @@ class ActivationScope:
       elements share the same TensorImpl as the C++ storage vectors.  No data
       is copied across the boundary at readback time.
 
-    * **Native hooks** — C++ lambdas fire during forward pass; only a thin
-      pybind11 dispatch frame traverses the boundary, eliminating per-forward
-      GIL + frame creation overhead.
+    * **Native C++ hooks** — forward-pass callbacks run entirely in C++ with
+      zero GIL acquisition.  Reductions are compiled via ``torch.jit.script``,
+      serialised to a temporary .pt file, and loaded by the C++ backend as a
+      TorchScript module that runs ``forward()`` natively.
 
     * **Four policy knobs** control memory/compute independently:
 
         * ``StoragePolicy``  (AUTO, CPU, GPU, DISK) — where data lives after detach.
-          Pinned-memory modifier enables async DMA for AUTO/CPU legs.
-          DISK mode streams tensors directly to .dat files, bypassing RAM entirely.
-        * ``ReductionPolicy`` (STORE_ALL, STREAMING, FINAL_ONLY) — what gets
-          kept vs. reduced across batches.
-        * ``CapturePolicy``   (EVERY, SAMPLE_N, MAX_K) — capture cadence
-          and safety rail against unbounded growth.
-        * ``CaptureMode``     (REFERENCE, SNAPSHOT) — whether to clone tensors
-          for independent storage after detach.
+        * ``ReductionPolicy`` (STORE_ALL, STREAMING, FINAL_ONLY) — what gets kept.
+        * ``CapturePolicy``   (EVERY, SAMPLE_N, MAX_K) — capture cadence.
+        * ``CaptureMode``     (REFERENCE, SNAPSHOT) — clone behaviour after detach.
 
     Parameters
     ----------
@@ -64,9 +59,7 @@ class ActivationScope:
     session_dir : str, optional
         Directory for DISK-mode .dat file storage.
     capture_mode : CaptureMode
-        Whether to clone captured tensors after detach.  REFERENCE (default)
-        shares storage with the autograd graph; SNAPSHOT creates an independent
-        copy for safe post‑capture mutation.
+        Whether to clone captured tensors after detach.
     """
 
     def __init__(
@@ -76,9 +69,9 @@ class ActivationScope:
         capture: CapturePolicy = CapturePolicy.EVERY,
         sample_every: int = 1,
         max_batches: int = 0,
-        auto_cpu_threshold_bytes: int = 1_048_576,   # 1 MiB
+        auto_cpu_threshold_bytes: int = 1_048_576,
         use_pinned: bool = False,
-        session_dir: Optional[str] = None,  # DISK mode: where to store .dat files
+        session_dir: Optional[str] = None,
         capture_mode: CaptureMode = CaptureMode.REFERENCE,
     ):
         self._storage: int = int(storage)
@@ -98,17 +91,19 @@ class ActivationScope:
             capture_mode=int(capture_mode),
         )
 
-        # Per-layer registered reductions: list of (compiled_fn_handle, layer_patterns)
+        # Per-layer reductions: list of (.pt path, layer_patterns)
         self._reductions: list = []
-        self._global_reduction = None
+        self._global_reduction_path: Optional[str] = None
+
+        # Temp files to clean up on teardown
+        self._temp_files: list = []
 
     # ── Properties ───────────────────────────────────────────────
 
     @property
     def session_id(self) -> int:
-        """Opaque C++ session identifier."""
         if self._session_id is None:
-            raise RuntimeError("session already destroyed — cannot access session_id")
+            raise RuntimeError("session already destroyed")
         return self._session_id
 
     @property
@@ -119,11 +114,7 @@ class ActivationScope:
         tensor in the lists shares the underlying TensorImpl with the C++
         storage vector — no data duplication at boundary crossing.
 
-        Returned tensors are **read-only views**.  To mutate safely, call
-        ``tensor.clone()`` first.
-
-        In DISK storage mode, tensors are loaded from .dat files on disk
-        rather than read from in-memory C++ vectors.
+        In DISK storage mode, tensors are loaded from .dat files on disk.
         """
         if self._session_id is None:
             raise RuntimeError(
@@ -131,7 +122,6 @@ class ActivationScope:
                 "Re-attach hooks via .attach() or .track()."
             )
 
-        # DISK mode: read tensors from raw binary .dat files on disk.
         if self._storage == int(StoragePolicy.DISK):
             disk_map = _C.session_readback_disk(self._session_id)
             result: Dict[str, List[torch.Tensor]] = {}
@@ -146,68 +136,68 @@ class ActivationScope:
                     result[layer_name] = tensors
             return result
 
-        # Standard in-memory readback path.
         raw = _C.session_readback(self._session_id)
-
-        # Convert C++ map → Python dict.  TensorImpls are shared (zero-copy).
         result: Dict[str, List[torch.Tensor]] = {}
         for key, tensor_list in raw.items():
-            if tensor_list:   # skip layers with empty vectors
+            if tensor_list:
                 result[key] = list(tensor_list)
         return result
 
-    # ── Compiled reduction registration ──────────────────────────
+    # ── Reduction registration ───────────────────────────────────
 
     def register_reduction(
         self,
         fn: Callable[[Optional[torch.Tensor], torch.Tensor], torch.Tensor],
         layers: Optional[List[str]] = None,
+        dummy_acc: Optional[torch.Tensor] = None,
+        dummy_tensor: Optional[torch.Tensor] = None,
     ) -> None:
         """Register a stateful reduction callable.
 
         The callable receives the current running accumulator (``None`` on the
         first call) and the latest forward-pass tensor, and returns the updated
-        accumulator.  It is compiled via ``torch.compile()`` and transferred to
-        C++ for native execution.
+        accumulator.  It is compiled via ``torch.jit.script``, serialised to a
+        temporary .pt file, and loaded by the C++ backend for zero‑GIL execution.
 
-        When *layers* is ``None``, fn becomes the **session-wide default** used
-        as fallback for any layer without an explicit per-layer reduction.
+        **State (e.g., count for running mean) must be embedded in the tensor**
+        — the accumulator tensor shape is user‑defined and all metadata lives
+        inside it.  For example, a running mean tensor can be
+        ``[features..., count]`` where the last element tracks batch count.
 
         Parameters
         ----------
-        fn : Callable[[Optional[Tensor], Tensor], Tensor]
-            Reduction callable (accumulator, new_tensor) → updated_accumulator.
-            Both arguments are views into C++‑owned storage — no copies are
-            made at the boundary.  The reduction may either mutate the
-            accumulator in‑place (return the same reference) or return a new
-            tensor.  In‑place is recommended for allocation‑free hot paths.
+        fn : callable
+            Reduction: ``(acc: Tensor | None, tensor: Tensor) -> Tensor``.
         layers : list[str] | None
-            Layer-name glob patterns (``fnmatch`` style).  When ``None``, fn is
-            set as the global default reduction for unmatched layers.
+            Layer-name ``fnmatch`` glob patterns.  ``None`` → global default.
+        dummy_acc : Tensor, optional
+            Example accumulator tensor for TorchScript warm-up.  Auto-generated if None.
+        dummy_tensor : Tensor, optional
+            Example activation tensor for TorchScript warm-up.  Auto-generated if None.
         """
         if self._session_id is None:
             raise RuntimeError("session already destroyed")
 
-        compiled_fn = try_compile(fn)
-        warmup(compiled_fn)
+        if dummy_tensor is None:
+            dummy_tensor = torch.randn(8, 64, dtype=torch.float32)
+        if dummy_acc is None:
+            dummy_acc = torch.randn(64, dtype=torch.float32)
 
-        handle = _C.make_compiled_handle(compiled_fn)
+        reduction_path = export_reduction(fn, dummy_acc, dummy_tensor)
+        self._temp_files.append(reduction_path)
 
         if layers is None:
-            self._global_reduction = handle
-            _C.set_global_reduction(self._session_id, handle)
+            self._global_reduction_path = reduction_path
         else:
-            self._reductions.append((handle, layers))
+            self._reductions.append((reduction_path, layers))
+
+    # ── Built-in reduction factories ──────────────────────────────
 
     @classmethod
     def min_reduction(cls):
-        """Return a stateful reduction: per-element min across all batches.
-
-        Signature: ``(running_min, new_tensor) -> updated_running_min``.
-        On first call (running_min is None), initialises from the first batch.
-        Mutates the accumulator **in-place** — no allocation on the hot path.
-        """
-        def _min(acc, new):
+        """Stateful per‑element min."""
+        from typing import Optional
+        def _min(acc: Optional[torch.Tensor], new: torch.Tensor) -> torch.Tensor:
             reduced = torch.amin(new, dim=0)
             if acc is None:
                 return reduced
@@ -216,13 +206,9 @@ class ActivationScope:
 
     @classmethod
     def max_reduction(cls):
-        """Return a stateful reduction: per-element max across all batches.
-
-        Signature: ``(running_max, new_tensor) -> updated_running_max``.
-        On first call (running_max is None), initialises from the first batch.
-        Mutates the accumulator **in-place** — no allocation on the hot path.
-        """
-        def _max(acc, new):
+        """Stateful per‑element max."""
+        from typing import Optional
+        def _max(acc: Optional[torch.Tensor], new: torch.Tensor) -> torch.Tensor:
             reduced = torch.amax(new, dim=0)
             if acc is None:
                 return reduced
@@ -231,30 +217,22 @@ class ActivationScope:
 
     @classmethod
     def mean_reduction(cls):
-        """Return a stateful reduction: per-element mean across all batches.
-
-        Uses a weighted running average so memory stays O(features) regardless
-        of batch count.  Mutates the accumulator **in-place** — no allocation.
-
-        Signature: ``(running_mean, new_tensor) -> updated_running_mean``.
-
-        Note
-        ----
-        The closure tracks a single global count shared across all layers this
-        reduction is registered for.  For per‑layer counts, register per‑layer
-        reductions with per‑layer closure dicts instead.
+        """Stateful per‑element running mean.
+        Accumulator shape: [features + 1] where last element = batch count.
         """
-        state = {"count": 0}
-
-        def _mean(acc, new):
+        from typing import Optional
+        def _mean(acc: Optional[torch.Tensor], new: torch.Tensor) -> torch.Tensor:
             batch_mean = torch.mean(new.float(), dim=0)
-            state["count"] += 1
             if acc is None:
-                return batch_mean
-            # In-place weighted running average: acc = (1-w)*acc + w*batch
-            w = 1.0 / state["count"]
-            acc.mul_(1.0 - w).add_(batch_mean, alpha=w)
-            return acc
+                # Append count as an extra row, matching batch_mean's ndim
+                count_row = batch_mean[:1] * 0.0 + 1.0
+                return torch.cat([batch_mean, count_row], dim=0)
+            count = acc[-1]
+            running_mean = acc[:-1]
+            new_count = count + 1.0
+            new_mean = (running_mean * count + batch_mean) / new_count
+            # Reconstruct [mean..., count_row]
+            return torch.cat([new_mean, new_count.unsqueeze(0)], dim=0)
         return _mean
 
     # ── Hook attach / detach ─────────────────────────────────────
@@ -268,27 +246,7 @@ class ActivationScope:
         exclude: Optional[List[str]] = None,
         capture: str = "output",
     ) -> Generator["ActivationScope", Any, None]:
-        """Context manager: attach → yield self → detach hooks.
-
-        Activations accumulate across all forward passes inside the block.
-        On exit, hooks are removed but the session survives so ``track()``
-        can be called again on the same tracker.
-
-        Parameters
-        ----------
-        model : nn.Module
-            Target PyTorch model.
-        layers : list[str] | None
-            Glob patterns matched against ``model.named_modules()``.  When both
-            *layers* and *include* are ``None``, all non-container submodules
-            are selected.
-        include : list[str] | None
-            Inclusion glob patterns (union).  Applied before *exclude*.
-        exclude : list[str] | None
-            Exclusion glob patterns (subtractive).  Matched names are removed.
-        capture : str
-            One of ``"output"`` (default), ``"input"``, or ``"both"``.
-        """
+        """Context manager: attach → yield self → detach hooks."""
         self.clear()
         self.attach(model, layers=layers, include=include, exclude=exclude,
                     capture=capture)
@@ -308,21 +266,13 @@ class ActivationScope:
     ) -> None:
         """Attach hooks without auto-teardown.
 
-        Glob matching happens exactly once at attach time; the resulting layer
-        set is locked and exclusive for this session's lifetime.
+        Glob matching happens once at attach time; the resulting layer set
+        is locked and exclusive.
 
-        Parameters
-        ----------
-        model : nn.Module
-            Target PyTorch model.
-        layers : list[str] | None
-            Explicit inclusion list (fnmatch patterns).
-        include : list[str] | None
-            Synonym for *layers*; applied before *exclude*.
-        exclude : list[str] | None
-            Subtractive fnmatch patterns.
-        capture : str
-            Capture direction: ``"output"`` | ``"input"`` | ``"both"``.
+        Each layer's reduction is resolved at attach time: per‑layer patterns
+        take priority, falling back to the global default.  The .pt file path
+        is passed to the C++ backend which loads the TorchScript module and
+        calls it directly on the forward hot path.
         """
         if self._session_id is None:
             raise RuntimeError("session already destroyed")
@@ -334,36 +284,41 @@ class ActivationScope:
         id_self = self._session_id
         for layer_name, mod in selected.items():
             module_ptr = id(mod)
-            _C.session_register_hooks(id_self, module_ptr, layer_name,
-                                      capture_dir_int)
 
-            for handle, layer_patterns in self._reductions:
-                for lp in layer_patterns:
-                    if fnmatch(layer_name, lp):
-                        _C.set_layer_reduction(id_self, layer_name, handle)
-                        break  # first matching pattern wins for this layer
+            # Resolve reduction for this layer
+            reduction_path = self._global_reduction_path or ""
+            for path, patterns in self._reductions:
+                for pat in patterns:
+                    if fnmatch(layer_name, pat):
+                        reduction_path = path
+                        break
+                if reduction_path != (self._global_reduction_path or ""):
+                    break
+
+            _C.session_register_hooks(
+                id_self, module_ptr, layer_name,
+                capture_dir_int, reduction_path
+            )
 
     # ── Teardown ─────────────────────────────────────────────────
 
     def clear(self) -> None:
-        """Clear accumulated activations; reset batch counters.
-
-        Hooks remain attached so the tracker keeps working on subsequent
-        forward passes.  Calling this repeatedly between backward passes in
-        an iterative training loop prevents unbounded memory growth.
-        """
+        """Clear accumulated activations; reset batch counters."""
         if self._session_id is not None:
             _C.session_clear(self._session_id)
 
     def remove(self) -> None:
-        """Full teardown: drop hooks, clear all storage, release C++ session.
-
-        After calling this, ``attach()`` must be invoked again before the
-        tracker will capture anything.
-        """
+        """Full teardown: drop hooks, clear storage, release C++ session."""
         if self._session_id is not None:
             _C.session_destroy(self._session_id)
             self._session_id = None
+        for path in self._temp_files:
+            try:
+                import os
+                os.unlink(path)
+            except OSError:
+                pass
+        self._temp_files.clear()
 
     def __del__(self) -> None:
         try:
@@ -382,19 +337,6 @@ class ActivationScope:
 
         Iterates ``model.named_parameters()``, applies optional glob filter,
         then returns detached CPU clones.  Fully independent of C++ session.
-
-        Parameters
-        ----------
-        model : nn.Module
-            Target PyTorch model.
-        layers : list[str] | None
-            Glob patterns for layer prefixes to include.  When ``None``, all
-            parameters are captured.
-
-        Returns
-        -------
-        dict[str, Tensor]
-            Mapping from parameter name → detached, CPU-cloned tensor.
         """
         snapshot: Dict[str, torch.Tensor] = {}
         for pname, param in model.named_parameters():

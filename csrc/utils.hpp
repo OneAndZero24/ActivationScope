@@ -8,24 +8,23 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
+#include <torch/extension.h>
+#include "datastructures.hpp"
 
 namespace activationscope {
 
 /// Sanitize a layer name into a filesystem-safe directory / filename.
-/// Replaces path separators, colons, wildcards, and dots with underscores.
-inline std::string sanitize_layer_name(const std::string& raw) {
-    std::string out;
-    out.reserve(raw.size());
-    for (char c : raw) {
-        if (c == '/' || c == '\\' || c == ':' || c == '?' || c == '*') {
-            out += '_';
-        } else if (c == '.') {
-            out += '_';
-        } else {
-            out += c;
-        }
-    }
-    return out;
-}
+std::string sanitize_layer_name(const std::string& raw);
+
+/// Create directory (and parents) if it doesn't exist.
+bool ensure_dir(const std::string& path);
+
+
+/// Generate a unique temporary directory path for this session.
+std::string make_session_temp_dir(uint64_t id);
+
+/// Compile-time helper: decide capture policy from session params.
+CapturePolicy infer_capture_policy(int64_t sample_every, int64_t max_batches);
 
 } // namespace activationscope

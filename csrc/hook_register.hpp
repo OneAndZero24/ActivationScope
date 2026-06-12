@@ -1,28 +1,31 @@
 /*
- * ActivationScope - Hook registration declarations.
+ * ActivationScope — Hook registration declarations.
  *
- * Hooks are registered via Python's module.register_forward_hook() /
- * register_forward_pre_hook() but the callback is a pybind11 cpp_function
- * thunk that immediately calls into pure C++ (core.cpp hook_callback).
+ * Registers native libtorch hooks via Python module API (pybind11).
+ * The hook closure captures all state directly — no dict lookups
+ * on the forward hot path.
  */
-
 #pragma once
 
+#include <memory>
 #include <string>
 #include "datastructures.hpp"
-
-namespace pybind11 { class object; }
 
 namespace activationscope {
 
 struct SessionState;
+struct LayerAccumulator;
 
-/// Register hooks on a Python-side nn.Module via pybind11.
-/// @param module_py  The Python module object (py::object reference).
-/// @param state      Pointer to owning session (never-null, managed by RAII).
-/// @param layer_key  Dot-separated module name (+ ".input"/".output" suffix for BOTH).
-/// @param direction   CaptureDir enum value: INPUT, OUTPUT, or BOTH.
-void register_hooks_on_module(void* module_py_ptr, SessionState* state,
-                              const std::string& layer_key, int32_t direction);
+/// Register hooks on a Python-side nn.Module.
+/// @param module_py_ptr  Raw PyObject* of the module.
+/// @param state          Owning session pointer.
+/// @param layer_key      Dot-separated module name.
+/// @param direction       CaptureDir enum int value.
+/// @param accum          Shared accumulator for this layer (pre-created).
+void register_hooks_on_module(void* module_py_ptr,
+                              SessionState* state,
+                              const std::string& layer_key,
+                              int32_t direction,
+                              std::shared_ptr<LayerAccumulator> accum);
 
 } // namespace activationscope

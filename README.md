@@ -4,7 +4,7 @@
 
 **High-performance PyTorch activation tracker with online reduction functionality for efficient model analysis.**
 
-Built on Python + C++ with native `libtorch` hooks and `torch.compile` reduction compilation.
+Built on Python + C++ with native `libtorch` hooks and **TorchScript** (`torch.jit.script`) reductions compiled to `.pt` files for **zero‑GIL** execution on the forward path.
 
 **Key Benefits**
 - Zero‑copy read‑back: activation tensors are shared between C++ and Python without extra copies.
@@ -34,28 +34,16 @@ acts = tracker.activations  # {layer_name: [Tensor, ...]} across all batches
 
 ### Toy model — 48 × Linear(256,256), batch=32, 200 forwards, CPU
 
-| Approach | ms/forward | Overhead | Data captured |
+| Approach | ms/forward | Overhead vs baseline | Data captured |
 |---|---|---|---|
-| No tracking | 2.83 | — | — |
-| Naive Python hooks | 3.05 | +8% | 594 MiB |
-| **ActivationScope** | **2.72** | **−4%** | **594 MiB** |
+| No tracking | 2.05 | — | — |
+| Naive Python hooks | 3.13 | +52.7% | 594 MiB |
+| **ActivationScope** | **2.65** | **+29.2%** | **594 MiB** |
 
-- **Peak VMS identical** — Scope 402,658 vs Naive 402,825 MiB (0.04% diff, within ASLR noise)
-- **12% faster** than naive Python hooks (3.05 → 2.72 ms/fwd)
-- **Zero-copy readback**: 594 MiB in 3.2 ms
-
-### ResNet-18 (pretrained), batch=8, 20 forwards, M1 CPU
-
-| Approach | ms/forward | Overhead | Data captured |
-|---|---|---|---|
-| No tracking | 143.4 | — | — |
-| Naive Python hooks | 162.3 | +13% | 5023 MiB |
-| **ActivationScope** | **158.1** | **+10%** | **5023 MiB** |
-
-- **Peak VMS identical** — Scope 405,496 vs Naive 405,463 MiB (0.01% diff, within ASLR noise)
-- **3% faster** than naive Python hooks on a real pretrained model
-- **60 layers tracked** across Conv2d, BatchNorm, ReLU, Linear, pooling layers
-- **Zero-copy readback**: 5023 MiB in 0.2 ms
+- **Peak VMS identical** — Scope 402,506 vs Naive 402,630 MiB (~0.03% diff, within ASLR noise)
+- **1.18× faster** than naive Python hooks (3.13 → 2.65 ms/fwd)
+- **95 layers tracked** (inputs + outputs across 48 linear layers)
+- **Zero-copy readback**: 594 MiB in 2.4 ms
 
 Run it yourself:
 ```bash

@@ -1,7 +1,7 @@
 """Type stubs for the compiled C++ extension ``activationscope._C``.
 
-Generated from the PYBIND11_MODULE bindings in ``csrc/bindings.cpp``.
-Mirrors the v2 session-scoped, zero-copy API.
+TorchScript reduction path — reductions are compiled via torch.jit.script,
+serialised to .pt files, and loaded by the C++ backend for zero‑GIL execution.
 """
 
 from typing import Any, Dict, List
@@ -18,40 +18,29 @@ def session_create(
     auto_cpu_threshold_bytes: int,
     use_pinned: bool,
     session_dir: str = "",
+    capture_mode: int = 0,
 ) -> int: ...
 
-def session_destroy(session_id: int) -> None: ...
+def session_destroy(id: int) -> None: ...
 
 def session_readback(
-    session_id: int,
+    id: int,
 ) -> Dict[str, List[torch.Tensor]]: ...
 
 def session_readback_disk(
-    session_id: int,
+    id: int,
 ) -> Dict[str, List[str]]: ...
 
-def session_clear(session_id: int) -> None: ...
+def session_clear(id: int) -> None: ...
 
-# ── Hook registration ───────────────────────────────────────
+def session_detach_hooks(id: int) -> None: ...
+
+# ── Hook registration ──────────────────────────────────────────────
 
 def session_register_hooks(
-    session_id: int,
+    id: int,
     module_ptr: Any,
-    layer_name: str,
-    capture_dir: int,
-) -> None: ...
-
-# ── Reduction registration ──────────────────────────────────
-
-def make_compiled_handle(fn: Any) -> int: ...
-
-def set_layer_reduction(
-    session_id: int,
-    layer_name: str,
-    handle: int,
-) -> None: ...
-
-def set_global_reduction(
-    session_id: int,
-    handle: int,
+    layer_key: str,
+    capture_dir_int: int,
+    reduction_path: str = "",
 ) -> None: ...

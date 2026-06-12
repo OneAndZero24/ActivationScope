@@ -20,7 +20,9 @@ TEMPLATE = os.path.join(ROOT, "pyproject.toml.template")
 OUTPUT = os.path.join(ROOT, "pyproject.toml")
 
 
-def generate(template: str, combos: list[dict]) -> str:
+from typing import List, Dict
+
+def generate(template: str, combos: List[Dict[str, str]]) -> str:
     """Fill the template with values derived from *combos*."""
     # Minimum Python and Torch across the matrix.
     pythons = sorted(

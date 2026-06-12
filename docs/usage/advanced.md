@@ -22,14 +22,14 @@ params = tracker.capture_parameters(model, layers=["encoder.*", "decoder.*"])
 ```
 The snapshot is completely independent of the activation storage and lives in regular Python tensors.
 
-## Using `torch.compile` for Stateful Reductions
+## Using `torch.jit.script` for Stateful Reductions
 
-The library automatically compiles registered reductions with `torch.compile`. You can also pre‑compile a reduction manually and pass it in:
+The library automatically compiles registered reductions with `torch.jit.script`. You can also pre‑compile a reduction manually and pass it in:
 
 ```python
 import torch
 
-def running_max(acc, new_tensor):
+def running_max(acc: Optional[torch.Tensor], new_tensor: torch.Tensor) -> torch.Tensor:
     """Stateful reduction: (accumulator, tensor) -> updated_accumulator.
     
     Uses in-place mutation — no allocation after the first call.
@@ -40,9 +40,9 @@ def running_max(acc, new_tensor):
         return reduced
     return torch.maximum(acc, reduced, out=acc)   # in-place
 
-compiled_fn = torch.compile(running_max)
+scripted_fn = torch.jit.script(running_max)
 tracker = activationscope.ActivationScope()
-tracker.register_reduction(compiled_fn)
+tracker.register_reduction(scripted_fn)
 ```
 
 Compiled functions enjoy the same zero‑overhead execution as built‑in reductions because they are stored as opaque handles and invoked directly from C++.

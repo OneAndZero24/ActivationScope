@@ -1,6 +1,6 @@
 # Custom Reductions – Stateful User‑Provided Callables
 
-ActivationScope allows you to register **arbitrary stateful reduction functions** that are compiled with `torch.compile` and executed entirely in the C++ backend, eliminating Python overhead on the hot path.
+ActivationScope allows you to register **arbitrary stateful reduction functions** that are compiled with `torch.jit.script` into TorchScript graphs and executed entirely in the C++ backend, eliminating Python overhead on the hot path.
 
 ## Stateful Reduction Contract
 
@@ -44,7 +44,7 @@ def running_mean(acc, new_tensor):
 tracker.register_reduction(running_mean)
 ```
 
-The callable is compiled with `torch.compile` (fallback to `torch.jit.script`). Compilation happens eagerly at registration time, so the first real forward pass incurs no compilation latency.
+The callable is compiled with `torch.jit.script`. Compilation happens eagerly at registration time, so the first real forward pass incurs no compilation latency.
 
 ## Global vs Per‑Layer Reductions
 

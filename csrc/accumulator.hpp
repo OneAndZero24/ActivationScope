@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <torch/extension.h>
 #include <vector>
 
@@ -52,6 +53,13 @@ public:
 
 private:
     std::vector<torch::Tensor> m_tensors;
+};
+
+/// ActivationAccumulator guarded by a per-layer mutex.
+/// Shared across the hook closure and session.
+struct LayerAccumulator {
+    ActivationAccumulator data;
+    std::mutex             mtx;
 };
 
 } // namespace activationscope

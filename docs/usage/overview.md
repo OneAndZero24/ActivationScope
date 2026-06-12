@@ -9,7 +9,7 @@ ActivationScope is a **high‑performance activation tracking library** for PyTo
   - `ReductionPolicy` – defines what is kept (full tensors, streaming reductions, or only the final tensor).
   - `CapturePolicy` – determines *when* activations are captured (every forward, every *N*th forward, or a hard cap of *K* captures).
 - **Layer selection** via fnmatch patterns to track only the layers you care about.
-- **Custom reduction registration** with `torch.compile`‑accelerated callables.
+- **Custom reduction registration** with TorchScript‑compiled callables.
 - **Convenient constructors** (`for_mean`, `for_max`, `for_min`) for common reductions.
 
 All of these features are exercised in the test suite (`tests/`). See the respective sections in this documentation for detailed usage examples and links to the corresponding tests.

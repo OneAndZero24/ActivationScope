@@ -64,7 +64,7 @@ class TestStorageAuto:
 class TestStorageAllPolicies:
     """Parametrized storage policy test."""
 
-    @pytest.mark.parametrize("storage_policy", [StoragePolicy.AUTO, StoragePolicy.CPU, StoragePolicy.GPU])
+    @pytest.mark.parametrize("storage_policy", [StoragePolicy.AUTO, StoragePolicy.CPU, StoragePolicy.GPU, StoragePolicy.DISK])
     def test_all_policies_complete_forward(self, simple_linear_model, storage_policy):
         """Every storage policy supports a full forward+backward cycle without crash."""
         t = ActivationScope(storage=storage_policy)

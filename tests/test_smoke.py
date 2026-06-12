@@ -69,7 +69,7 @@ class TestInstantiationSmoke:
 
     def test_all_storage_combos(self):
         """Every StoragePolicy produces a valid tracker."""
-        for sp in (StoragePolicy.AUTO, StoragePolicy.CPU, StoragePolicy.GPU):
+        for sp in (StoragePolicy.AUTO, StoragePolicy.CPU, StoragePolicy.GPU, StoragePolicy.DISK):
             t = ActivationScope(storage=sp)
             assert isinstance(t.session_id, int)
             t.remove()

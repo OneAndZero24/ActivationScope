@@ -1,9 +1,11 @@
 """ActivationScope helper utilities.
 
-Layer selection, capture-direction parsing, compiled-reduction warm-up,
+Layer selection, capture-direction parsing, TorchScript compilation,
 raw-tensor disk loading, and other functions shared across the package.
 """
 
+import os
+import tempfile
 from fnmatch import fnmatch
 from typing import Callable, Dict, List, Optional, Any
 
@@ -29,15 +31,7 @@ def select_layers(
     include: Optional[List[str]] = None,
     exclude: Optional[List[str]] = None,
 ) -> Dict[str, torch.nn.Module]:
-    """Apply glob filters to named_modules and return locked layer set.
-
-    Steps:
-        1. Enumerate model.named_modules()
-        2. If *include* is None -> use all non-container submodules as baseline
-        3. Apply include patterns (fnmatch union)
-        4. Subtract exclude patterns
-    """
-    # Baseline: exclude container types and the root module itself
+    """Apply glob filters to named_modules and return locked layer set."""
     containers = (torch.nn.ModuleList, torch.nn.ModuleDict, torch.nn.Sequential)
     all_modules: Dict[str, torch.nn.Module] = {
         name: mod
@@ -46,7 +40,6 @@ def select_layers(
     }
 
     selected = all_modules
-
     patterns = layers if include is None else include
     if patterns:
         selected = {
@@ -70,7 +63,6 @@ def select_layers(
             )
         }
 
-    # Edge case: model is a leaf module with no non-container submodules
     if not selected and not isinstance(model, containers):
         if len(list(model.children())) == 0:
             selected = {"": model}
@@ -78,30 +70,68 @@ def select_layers(
     return selected
 
 
-# ── Compiled reduction helpers ────────────────────────────────────────
+# ── TorchScript compilation ──────────────────────────────────────────
 
-def try_compile(
-    fn: Callable[..., torch.Tensor]
-) -> Callable[..., torch.Tensor]:
-    """Try to compile a reduction callable via torch.compile()."""
-    if hasattr(torch, "compile") and callable(torch.compile):
-        try:
-            return torch.compile(fn)       # type: ignore[return-value]
-        except (RuntimeError, TypeError):
-            pass
-    return fn
+def compile_reduction(
+    fn: Callable[..., torch.Tensor],
+    *dummy_args: torch.Tensor,
+) -> "torch.jit.ScriptFunction":
+    """Compile a reduction callable to TorchScript.
 
+    Uses ``torch.jit.script`` always.  The reduction function **must** use
+    ``from typing import Optional`` and annotate the accumulator argument
+    as ``Optional[torch.Tensor]`` so TorchScript infers the correct type.
 
-def warmup(
-    compiled_fn: Callable[..., torch.Tensor]
-) -> None:
-    """Execute a synthetic warm-up forward so first real batch is not cold-start."""
+    Example::
+
+        from typing import Optional
+
+        def my_reduce(acc: Optional[torch.Tensor], new: torch.Tensor) -> torch.Tensor:
+            if acc is None:
+                return new.mean(dim=0)
+            return torch.maximum(acc, new.mean(dim=0), out=acc)
+    """
+    scripted = torch.jit.script(fn)
     try:
-        dummy = torch.randn(2, 64, dtype=torch.float32)
-        # Call with None accumulator (simulates first batch).
-        _ = compiled_fn(None, dummy)
+        scripted(*dummy_args)
     except Exception:
         pass
+    return scripted
+
+
+def export_reduction(
+    fn: Callable[..., torch.Tensor],
+    *dummy_args: torch.Tensor,
+    save_dir: Optional[str] = None,
+) -> str:
+    """Compile *fn* with torch.jit.script, write to a temporary .pt file,
+    and return the file path.
+
+    The .pt file contains a single ScriptModule with a forward(acc, tensor)
+    method.  The caller passes the path to the C++ backend which loads it
+    via torch::jit::load.  The temp file is cleaned up by C++ after loading.
+
+    Parameters
+    ----------
+    fn : callable
+        Reduction function: (acc: Tensor | None, tensor: Tensor) -> Tensor.
+    *dummy_args : torch.Tensor
+        Example arguments for warm-up (e.g., dummy accumulator, dummy tensor).
+    save_dir : str, optional
+        Directory for the .pt file.  If None, the system temp directory is used.
+
+    Returns
+    -------
+    str
+        Absolute path to the temporary .pt file.
+    """
+    scripted = compile_reduction(fn, *dummy_args)
+    fd, path = tempfile.mkstemp(
+        suffix=".pt", prefix="activationscope_reduction_", dir=save_dir
+    )
+    os.close(fd)
+    scripted.save(path)
+    return path
 
 
 def pattern_or_identity(fn: Callable[..., Any]) -> str:

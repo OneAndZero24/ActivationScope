@@ -35,6 +35,7 @@ import pytest
 import torch
 
 from activationscope import ActivationScope, StoragePolicy
+import activationscope._C as _C  # for session_init_accumulator
 
 log = logging.getLogger(__name__)
 
@@ -77,19 +78,15 @@ class SVDBasis:
 
 
 def _reshape_for_svd(tensor: torch.Tensor) -> torch.Tensor:
-    """Reshape a (possibly batched) activation tensor into [*, feature_dim].
-
-    Conv2d-style (ndim==4): [N, C, H, W] -> [N*H*W, C]  (spatial positions -> rows).
-    Linear-style  (ndim==3): [N, T, F]   -> [N*T, F]    (sequence tokens  -> rows).
-    Linear-style  (ndim==2): [N, F]      -> [N, F]       (already correct).
-    Fallback flattens everything beyond the batch dimension.
-    """
-    if tensor.ndim == 4:
-        N, C, H, W = tensor.shape
+    """Reshape a (possibly batched) activation tensor into [*, feature_dim]."""
+    ndim = tensor.dim()
+    if ndim == 4:
+        C = tensor.size(1)
         return tensor.permute(0, 2, 3, 1).reshape(-1, C)
-    if tensor.ndim == 2:
+    elif ndim == 2:
         return tensor
-    return tensor.reshape(-1, tensor.shape[-1])
+    else:
+        return tensor.reshape(-1, tensor.size(-1))
 
 
 # ============================================================================
@@ -144,31 +141,27 @@ def online_svd(
     dict[str, SVDBasis]
         One entry per layer that produced non-empty statistics.
     """
-    # Per-layer shared state (populated by the two reduction passes).
+    # Per-layer results
     layer_mu: Dict[str, torch.Tensor] = {}
     layer_cov: Dict[str, torch.Tensor] = {}
 
-    # -- Pass 1: accumulate per-layer running sum via stateful reduction --
+    # -- Pass 1: accumulate per-layer running sum with count embedded in tensor --
     tracker = ActivationScope(storage=StoragePolicy.CPU)
 
-    # Each layer tracks (running_sum, count) in a closure dict so we can
-    # compute exact mu = sum / count after the forward pass.
-    layer_sum_states: Dict[str, dict] = {}
-
     for name in layer_names:
-        st: dict = {"running_sum": None, "count": 0}
-        layer_sum_states[name] = st
-
-        def _make_running_sum(st_ref: dict):
-            def _sum_reduction(acc, new_tensor):
+        def _make_running_sum():
+            from typing import Optional
+            def _sum_reduction(acc: Optional[torch.Tensor], new_tensor: torch.Tensor) -> torch.Tensor:
                 reshaped = _reshape_for_svd(new_tensor.float())
-                st_ref["count"] += reshaped.shape[0]
+                batch_count = torch.tensor(float(reshaped.size(0)))
                 if acc is None:
-                    return reshaped.sum(dim=0)
-                return acc.add_(reshaped.sum(dim=0))
+                    return torch.cat([reshaped.sum(dim=0), batch_count.unsqueeze(0)])
+                running_sum = acc[:-1]
+                count = acc[-1]
+                return torch.cat([running_sum.add_(reshaped.sum(dim=0)), (count + batch_count).unsqueeze(0)])
             return _sum_reduction
 
-        tracker.register_reduction(_make_running_sum(st), layers=[name])
+        tracker.register_reduction(_make_running_sum(), layers=[name])
 
     with tracker.track(model, layers=layer_names, capture="input"):
         model.eval()
@@ -179,40 +172,62 @@ def online_svd(
         raw_acts = tracker.activations
 
         for name in layer_names:
-            st = layer_sum_states[name]
-            if st["count"] == 0 or name not in raw_acts or len(raw_acts[name]) == 0:
+            if name not in raw_acts or len(raw_acts[name]) == 0:
                 continue
-            layer_mu[name] = raw_acts[name][0].float() / float(st["count"])
+            t = raw_acts[name][0].float()
+            # Accumulator shape: [features..., count] — count is last element
+            summed = t[:-1]
+            count = t[-1]
+            if count.item() == 0:
+                continue
+            layer_mu[name] = summed / count
 
-    # -- Pass 2: accumulate covariance via per-layer stateful reduction --
+    # -- Pass 2: accumulate covariance, mu_vec pre-seeded via session_init_accumulator --
     tracker2 = ActivationScope(storage=StoragePolicy.CPU)
 
     for name in layer_names:
         mu = layer_mu.get(name)
         if mu is None:
             continue
-        d = mu.shape[0]
+        d = mu.size(0)
+        zeros = torch.zeros((d, d), dtype=torch.float32, device="cpu")
 
-        # Capture mu and d in closure for this specific layer.
-        def _make_cov_accum(d_dim: int, mu_vec: torch.Tensor):
-            def _cov_accum(acc, new_tensor):
+        def _make_cov_accum():
+            from typing import Optional
+            def _cov_accum(acc: Optional[torch.Tensor], new_tensor: torch.Tensor) -> torch.Tensor:
                 reshaped = _reshape_for_svd(new_tensor.float())
                 if acc is None:
-                    acc = torch.zeros(
-                        (d_dim, d_dim), dtype=torch.float32, device="cpu"
-                    )
-                # Blocked accumulation for numerical stability.
-                chunk_size = 16384 if d_dim <= 2048 else 4096
-                for start in range(0, reshaped.shape[0], chunk_size):
-                    xc = reshaped[start : start + chunk_size] - mu_vec
-                    acc.add_(xc.T @ xc)
-                return acc
-
+                    return torch.zeros(1)
+                mv = acc[-1]
+                cov = acc[:-1]
+                d_dim = mv.size(0)
+                if d_dim <= 2048:
+                    chunk_size = 16384
+                else:
+                    chunk_size = 4096
+                batch_sz = reshaped.size(0)
+                start = 0
+                while start < batch_sz:
+                    end = start + chunk_size
+                    if end > batch_sz:
+                        end = batch_sz
+                    xc = reshaped[start:end] - mv
+                    cov.add_(xc.T @ xc)
+                    start = end
+                return torch.cat([cov, mv.unsqueeze(0)], dim=0)
             return _cov_accum
 
-        tracker2.register_reduction(_make_cov_accum(d, mu), layers=[name])
+        tracker2.register_reduction(_make_cov_accum(), layers=[name])
+
+        # Pre-seed AFTER register_reduction but BEFORE track (session_init will be
+        # called inside the with block to avoid track()'s clear() destroying it)
+        tracker2._pre_seeds = getattr(tracker2, '_pre_seeds', {})
+        tracker2._pre_seeds[name] = torch.cat([zeros, mu.unsqueeze(0)], dim=0)
 
     with tracker2.track(model, layers=layer_names, capture="input"):
+        # Pre-seed accumulators now that track() has attached hooks
+        for name, seed_tensor in getattr(tracker2, '_pre_seeds', {}).items():
+            _C.session_init_accumulator(tracker2.session_id, name, seed_tensor)
         model.eval()
         with torch.no_grad():
             for batch in dataloader:
@@ -223,7 +238,8 @@ def online_svd(
         for name in layer_names:
             if name not in raw_cov or len(raw_cov[name]) == 0:
                 continue
-            layer_cov[name] = raw_cov[name][0]
+            # Acc shape: [cov | mu_row] — strip the extra mu row
+            layer_cov[name] = raw_cov[name][0][:-1]
 
     # -- SVD on covariance -> principal basis ---------------------------
     results: Dict[str, SVDBasis] = {}

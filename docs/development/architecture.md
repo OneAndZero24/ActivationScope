@@ -10,14 +10,14 @@ ActivationScope's architecture is intentionally split between a **high‑perform
    - `CapturePolicy` controls capture frequency (every forward, every Nth forward, or a hard cap `MAX_K`).
    - `CaptureMode` controls tensor cloning: `REFERENCE` (detach only, shares storage) or `SNAPSHOT` (detach + clone, independent copy).
 4. **Session‑scoped lifecycle** — Each `ActivationScope` instance creates a unique `SessionState` keyed by an atomic `uint64_t`. Multiple trackers can coexist without interference, supporting nested tracking and multi‑model experiments.
-5. **Extensible stateful reductions** — User‑provided callables follow a `(accumulator, new_tensor) -> updated_accumulator` contract. Both arguments are views into C++‑owned tensor storage (no copies at the boundary). They are compiled with `torch.compile` (or `torch.jit.script` as fallback) and stored as opaque C++ handles (`CompiledFnHandle`). The C++ hook invokes the compiled graph directly, bypassing Python. Per‑layer handles are cloned via `clone_compiled_handle()` to avoid double‑free when one glob pattern matches multiple layers. The accumulator is stored via `replace_last()` which is safe for in‑place mutations that return the same `TensorImpl`.
+5. **Extensible stateful reductions** — User‑provided callables follow a `(Optional[Tensor], Tensor) -> Tensor` contract. Both arguments are views into C++‑owned tensor storage (no copies at the boundary). They are compiled with `torch.jit.script`, serialised to temporary `.pt` files, and loaded as `torch::jit::script::Module` objects by the C++ backend. The C++ hook invokes the TorchScript graph directly, bypassing Python — zero GIL, zero serialisation. The accumulator is stored via `replace_last()` which is safe for in‑place mutations that return the same `TensorImpl`.
 6. **Thread‑safe accumulation** — A single `std::mutex` protects the per‑layer `ActivationAccumulator` during concurrent forward passes. The lock scope is minimized to a map lookup + accumulator update, keeping contention low.
 
 ### Key Files
 - `csrc/session.cpp/.hpp` — Session creation (now accepts `CaptureMode`), destruction, and read‑back logic.
 - `csrc/callback.cpp/.hpp` — Hot‑path logic: early‑exit checks, stateful reduction dispatch, capture mode (clone on `SNAPSHOT`), storage policy handling, and accumulation.
 - `csrc/hook_register.cpp/.hpp` — Native hook registration and callback implementation.
-- `csrc/compiled_fn.cpp/.hpp` — Opaque compiled‑graph handles with per‑layer cloning (`clone_compiled_handle()`).
+- `csrc/reduction.hpp/.cpp` — TorchScript module wrapper loaded from `.pt` file, zero‑GIL `forward()`.
 - `csrc/datastructures.hpp` — All shared enums (`StoragePolicy`, `ReductionPolicy`, `CapturePolicy`, `CaptureMode`) and structs.
 - `activationscope/tracker.py` — Python façade exposing `ActivationScope`, policy enums, `register_reduction`, `capture_parameters`, and `capture_mode`.
 - `activationscope/policies.py` — Python‑side enum definitions for all four policy knobs.

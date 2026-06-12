@@ -22,7 +22,7 @@ Typical use-cases include:
 - **Protection / unlearning** — constrain weight updates to the orthogonal
   complement of a principal subspace (InTAct‑style workflows).
 - **Interpretability** — inspect the top singular vectors to see which input
-  patterns the layer “cares about”.
+  patterns the layer "cares about".
 - **Anomaly detection** — monitor the projection residual (‖x − μ − U Uᵀ (x−μ)‖)
   to flag out‑of‑distribution inputs.
 
@@ -45,6 +45,11 @@ Both produce the same output structure — a `SVDBasis` dataclass — and give
 ## The Result Structure
 
 ```python
+from activationscope.tests.test_svd_analysis import SVDBasis
+# (dataclass also available directly from the test module)
+```
+
+```python
 @dataclass
 class SVDBasis:
     mu: torch.Tensor          # [d]      per-feature mean
@@ -65,18 +70,45 @@ class SVDBasis:
 
 ## Online SVD (Streaming Covariance)
 
-Online SVD streams the data in two passes *without ever storing the full
-activation matrix*:
+Online SVD streams the data in two passes **without ever storing the full
+activation matrix**. It uses TorchScript‑compiled stateful reductions that
+embed state (count, mu vector) directly in the accumulator tensor shape:
 
 ```
-Pass 1: accumulate running mean   → μ
-Pass 2: accumulate covariance      → Σ = Σ (x−μ)(x−μ)ᵀ
-Final:  svd(Σ) → Vh               → U = Vh[:k]
+Pass 1: register running‑sum reduction → accumulator = [∑xᵢ | count]
+        After pass 1: μ = sum / count
+
+Pass 2: register covariance reduction, pre‑seed accumulator with [zeros | μ]
+        via session_init_accumulator.  Reduction accumulates (x−μ)ᵀ(x−μ).
+        After pass 2: Σ = accumulator
+
+Final:  svd(Σ) → Vh  →  U = Vh[:k]
 ```
 
-Because Σ is d × d, the peak memory depends only on the *feature dimension*, not
-on how many batches you process.  The residual singular values are recovered as
-`sqrt(clamp(σ, 0))` to match the scale of the original centered data.
+### Key Implementation Details
+
+**TorchScript‑compatible reductions required.** Every reduction registered
+with ActivationScope must be expressible in pure `torch.jit.script` — the
+accumulator parameter must be typed `Optional[torch.Tensor]`, and all
+operations must be supported by TorchScript.
+
+**State embedded in tensor.** The pass‑1 running‑sum reduction stores count
+as the last element of the accumulator tensor: `[features..., count]`. The
+pass‑2 covariance reduction stores the mu vector as an extra row:
+`[cov_matrix | mu_row]`. No Python closures or side‑channel dicts hold state.
+
+**`session_init_accumulator` for pass‑2 pre‑seeding.** The covariance
+reduction needs `μ` available on the first call. The accumulator is
+pre‑seeded *after* `track()` (which clears accumulators) but *before* the
+first forward, using the C‑extension API:
+
+```python
+import activationscope._C as _C
+
+with tracker.track(model, ...):
+    _C.session_init_accumulator(tracker.session_id, name, seed_tensor)
+    # ... forward passes now see pre‑seeded accumulator
+```
 
 ### Example
 
@@ -111,6 +143,10 @@ print(basis["fc1"].U.shape)   # torch.Size([16, 20]) — 16 directions of dim 20
 print(basis["fc1"].k)         # 16
 ```
 
+Because Σ is d × d, the peak memory depends only on the *feature dimension*, not
+on how many batches you process.  The residual singular values are recovered as
+`sqrt(clamp(σ, 0))` to match the scale of the original centered data.
+
 ### When to Use
 
 - Data is too large to fit in memory at once (e.g., a full training set).
@@ -132,7 +168,8 @@ Final:  svd(X − μ) → Vh       → U = Vh[:k]
 ```
 
 This is simpler and avoids the square‑root correction on singular values, but
-requires `O(N·d)` memory.
+requires `O(N·d)` memory. No TorchScript reductions or pre‑seeding needed —
+just default `STORE_ALL` collection.
 
 ### Example
 
@@ -224,25 +261,82 @@ removed after the data pass completes.
 ## Advanced: Building Your Own SVD Pipeline
 
 The building blocks are fully reusable.  To construct a custom SVD workflow
-(e.g., with your own reduction policy or capture cadence):
+with stateful TorchScript reductions and accumulator pre‑seeding:
 
 ```python
+from typing import Optional
+import torch
+import activationscope._C as _C
 from activationscope import ActivationScope, StoragePolicy
 from activationscope.tests.test_svd_analysis import _reshape_for_svd
 
-tracker = ActivationScope(storage=StoragePolicy.CPU)
-with tracker.track(model, layers=["fc1"], capture="input"):
-    for batch in dataloader:
-        _ = model(batch[0])
+# ── Pass 1: running sum reduction (state in tensor: [sum | count]) ──
+def running_sum_reduce(
+    acc: Optional[torch.Tensor],
+    new: torch.Tensor,
+) -> torch.Tensor:
+    reshaped = _reshape_for_svd(new.float())
+    batch_count = torch.tensor(float(reshaped.size(0)))
+    if acc is None:
+        return torch.cat([reshaped.sum(dim=0), batch_count.unsqueeze(0)])
+    running_sum = acc[:-1]
+    count = acc[-1]
+    return torch.cat([running_sum.add_(reshaped.sum(dim=0)),
+                      (count + batch_count).unsqueeze(0)])
 
-# Access raw activations and run your own decomposition
-all_acts = torch.cat([t.float() for t in tracker.activations["fc1"]], dim=0)
-X = _reshape_for_svd(all_acts)
+tracker1 = ActivationScope(storage=StoragePolicy.CPU)
+tracker1.register_reduction(running_sum_reduce, layers=["fc1"])
 
-mu = X.mean(dim=0)
-_, S, Vh = torch.linalg.svd(X - mu, full_matrices=False)
-U = Vh[:k]  # top-k basis
+with tracker1.track(model, layers=["fc1"], capture="input"):
+    model.eval()
+    with torch.no_grad():
+        for batch in dataloader:
+            _ = model(batch[0])
+
+# Extract μ from pass‑1 accumulator
+t = tracker1.activations["fc1"][0].float()
+mu = t[:-1] / t[-1]  # sum / count
+
+# ── Pass 2: covariance reduction with pre‑seeded μ ──
+def cov_reduce(
+    acc: Optional[torch.Tensor],
+    new: torch.Tensor,
+) -> torch.Tensor:
+    reshaped = _reshape_for_svd(new.float())
+    if acc is None:
+        return torch.zeros(1)
+    mv = acc[-1]
+    cov = acc[:-1]
+    for start in range(0, reshaped.size(0), 4096):
+        xc = reshaped[start:start+4096] - mv
+        cov.add_(xc.T @ xc)
+    return torch.cat([cov, mv.unsqueeze(0)], dim=0)
+
+tracker2 = ActivationScope(storage=StoragePolicy.CPU)
+tracker2.register_reduction(cov_reduce, layers=["fc1"])
+
+with tracker2.track(model, layers=["fc1"], capture="input"):
+    # Pre‑seed accumulator with [zeros | mu_row]
+    d = mu.size(0)
+    seed = torch.cat([torch.zeros(d, d), mu.unsqueeze(0)], dim=0)
+    _C.session_init_accumulator(tracker2.session_id, "fc1", seed)
+
+    model.eval()
+    with torch.no_grad():
+        for batch in dataloader:
+            _ = model(batch[0])
+
+# SVD on covariance → principal basis
+cov = tracker2.activations["fc1"][0][:-1]  # strip mu row
+_, S, Vh = torch.linalg.svd(cov, full_matrices=False)
+U = Vh[:reduced_dim]  # top‑k basis
 ```
+
+**Key constraints for custom reductions:**
+- The accumulator parameter **must** be `Optional[torch.Tensor]`.
+- All operations must be TorchScript‑compatible (no dicts, closures, or external state).
+- State (count, μ, etc.) must be embedded in the tensor shape.
+- `session_init_accumulator` must be called **after** `track()` (which clears) but **before** the first forward.
 
 ---
 
@@ -250,7 +344,7 @@ U = Vh[:k]  # top-k basis
 
 - **Test suite**: `tests/test_svd_analysis.py` — exercises both methods
   (online, offline, equivalence, conv handling, tracker integration).
-- **Original design**: `reference.py` — `UnlearnIntervalProtection.setup_protection()`
-  is the InTAct workflow that inspired these standalone functions.
+- **Original design**: derived from the InTAct protection‑loss workflow.
 - **Related docs**: [ReductionPolicy](reductionpolicy.md) for streaming
-  statistics, [CapturePolicy](capturepolicy.md) for controlling capture cadence.
+  statistics, [CapturePolicy](capturepolicy.md) for controlling capture cadence,
+  [Custom Reductions](customreductions.md) for TorchScript requirements.

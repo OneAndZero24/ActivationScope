@@ -24,7 +24,7 @@ COPY csrc/ ./csrc/
 
 RUN pip install --upgrade pip setuptools wheel && \
     pip install torch==${PYTORCH_VERSION} --index-url "https://download.pytorch.org/whl/${PLATFORM}" && \
-    pip install .[dev]
+    pip install --no-build-isolation .[dev]
 
 COPY tests/ ./tests/
 

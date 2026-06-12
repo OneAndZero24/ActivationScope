@@ -4,11 +4,11 @@
 
 **High-performance PyTorch activation tracker with online reduction functionality for efficient model analysis.**
 
-Built on Python + C++ with native `libtorch` hooks and **TorchScript** (`torch.jit.script`) reductions compiled to `.pt` files for **zero‑GIL** execution on the forward path.
+Built on Python + C++ with native `libtorch` hooks and **TorchScript** (`torch.jit.script`) reductions compiled to `.pt` files.
 
 **Key Benefits**
 - Zero‑copy read‑back: activation tensors are shared between C++ and Python without extra copies.
-- Native C++ hooks: no Python dispatch overhead per forward pass.
+- Native C++ hooks: no Python compute overhead per forward pass.
 - Flexible policy knobs (`StoragePolicy`, `ReductionPolicy`, `CapturePolicy`, `CaptureMode`) let you balance memory, compute, and I/O.
 - Direct-to-disk streaming (`StoragePolicy.DISK`) — activations are written directly from C++ to disk. Ideal for long-running training loops with very large models. Activations are read back on demand from `.dat` files.
 - Works with large models (e.g., diffusion) and supports streaming statistics for online use cases.

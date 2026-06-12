@@ -34,10 +34,10 @@ class TestImportSmoke:
         assert callable(getattr(_C, "session_create"))
 
     def test_tracker_importable(self):
-        """Internal tracker module exposes expected symbols."""
-        from activationscope.tracker import (
-            _parse_capture_dir,
-            _select_layers,
+        """Internal modules expose expected symbols."""
+        from activationscope.utils import (
+            parse_capture_dir,
+            select_layers,
             pattern_or_identity,
         )  # noqa: F401
         pass  # If imports succeed, the test passes

@@ -37,6 +37,19 @@ public:
         return m_tensors.size();
     }
 
+    /// Returns the last stored tensor (the running state for reductions).
+    /// Returns nullptr if the accumulator is empty.
+    const torch::Tensor* last() const noexcept {
+        return m_tensors.empty() ? nullptr : &m_tensors.back();
+    }
+
+    /// Replace the last stored tensor in-place — safe even when the new
+    /// tensor shares the same TensorImpl (in-place reductions).  Does NOT
+    /// pre-destroy the old entry.
+    void replace_last(torch::Tensor tensor) {
+        m_tensors.back() = std::move(tensor);
+    }
+
 private:
     std::vector<torch::Tensor> m_tensors;
 };

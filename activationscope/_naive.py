@@ -11,6 +11,8 @@ from fnmatch import fnmatch
 
 import torch
 
+from activationscope.policies import CaptureMode
+
 
 class NaiveHookTracker:
     """Accumulate per-layer activations via Python forward hooks.
@@ -20,18 +22,29 @@ class NaiveHookTracker:
     for production use — exists solely as a reference for benchmarking and
     correctness testing.
 
+    Parameters
+    ----------
+    capture_mode : CaptureMode
+        Controls copy behaviour of captured tensors:
+        * ``CaptureMode.REFERENCE`` (default) — ``.detach().cpu()``.
+          Tensors share storage with the autograd graph and may be
+          invalidated on subsequent forward passes.
+        * ``CaptureMode.SNAPSHOT`` — ``.detach().cpu().clone()``.
+          Completely independent copies, safe to keep across forwards.
+
     Usage::
 
-        n = NaiveHookTracker()
+        n = NaiveHookTracker(capture_mode=CaptureMode.SNAPSHOT)
         with n.track(model):
             for _ in range(n_batches):
                 _ = model(x)
         acts = n.activations  # dict[str, list[Tensor]]
     """
 
-    def __init__(self):
+    def __init__(self, capture_mode: CaptureMode = CaptureMode.REFERENCE):
         self._handles: list = []
         self._activations: dict[str, list[torch.Tensor]] = {}
+        self._capture_mode = capture_mode
 
     def track(self, model, layers=None):
         """Context manager: attach → yield self → detach."""
@@ -66,11 +79,19 @@ class NaiveHookTracker:
             self._handles.append(handle)
 
     def _make_hook(self, layer_name):
+        capture_mode = self._capture_mode
+
         def hook_fn(_module, _inp, out):
             if isinstance(out, torch.Tensor):
-                self._activations[layer_name].append(out.detach().cpu())
+                t = out.detach().cpu()
+                self._activations[layer_name].append(
+                    t.clone() if capture_mode == CaptureMode.SNAPSHOT else t
+                )
             elif isinstance(out, (tuple, list)) and len(out) > 0:
-                self._activations[layer_name].append(out[0].detach().cpu())
+                t = out[0].detach().cpu()
+                self._activations[layer_name].append(
+                    t.clone() if capture_mode == CaptureMode.SNAPSHOT else t
+                )
 
         return hook_fn
 

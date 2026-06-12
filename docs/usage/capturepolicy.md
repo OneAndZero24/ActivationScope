@@ -13,26 +13,45 @@
 ```python
 # Sample every 5th forward
 tracker = activationscope.ActivationScope(
-    capture_policy=activationscope.CapturePolicy.SAMPLE_N,
+    capture=activationscope.CapturePolicy.SAMPLE_N,
     sample_every=5,
 )
 
 # Hard‑cap at 20 captures per layer
 tracker = activationscope.ActivationScope(
-    capture_policy=activationscope.CapturePolicy.MAX_K,
+    capture=activationscope.CapturePolicy.MAX_K,
     max_batches=20,
 )
 ```
 
 Reference tests: `tests/test_integ_capture_policies.py` (plus related end‑to‑end tests).
+
+## Distinction from CaptureMode
+
+`CapturePolicy` controls **when** to capture (frequency).  `CaptureMode` controls **how** the captured tensor is stored:
+
+- **`CaptureMode.REFERENCE`** (default): `detach()` only — shares storage with the autograd graph.  Fastest path.
+- **`CaptureMode.SNAPSHOT`**: `detach()` + `clone()` — independent copy safe for post‑capture mutation.
+
+The two are orthogonal and can be combined freely:
+
+```python
+tracker = activationscope.ActivationScope(
+    capture=activationscope.CapturePolicy.SAMPLE_N,
+    capture_mode=activationscope.CaptureMode.SNAPSHOT,
+    sample_every=5,
+)
+```
+
 ## Interaction with Other Policies
 Capture frequency is orthogonal to both `StoragePolicy` and `ReductionPolicy`. A common pattern for memory‑constrained workloads is:
 ```python
 tracker = activationscope.ActivationScope(
     storage=activationscope.StoragePolicy.GPU,
     reduction=activationscope.ReductionPolicy.STREAMING,
-    capture_policy=activationscope.CapturePolicy.MAX_K,
+    capture=activationscope.CapturePolicy.MAX_K,
     max_batches=30,
+    capture_mode=activationscope.CaptureMode.REFERENCE,
 )
 tracker.register_reduction(activationscope.ActivationScope.for_mean())
 ```

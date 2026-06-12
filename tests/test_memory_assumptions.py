@@ -59,7 +59,7 @@ class TestStreamingBounded:
     def test_streaming_bounded_list_length(self, simple_linear_model):
         """STREAMING with registered reduction keeps small per-layer lists."""
         t = ActivationScope(reduction=ReductionPolicy.STREAMING)
-        t.register_reduction(ActivationScope.for_max(), layers=None)
+        t.register_reduction(ActivationScope.max_reduction(), layers=None)
 
         with t.track(simple_linear_model):
             for _ in range(50):

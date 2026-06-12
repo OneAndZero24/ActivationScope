@@ -19,7 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "accumulators.hpp"
+#include "accumulator.hpp"
 #include "capture_policy.hpp"
 #include "compiled_fn.hpp"
 #include "datastructures.hpp"
@@ -71,6 +71,9 @@ struct SessionState {
   // -- Pinned-memory modifier for GPU→CPU transfers ----------------
   bool use_pinned = false;
 
+  // -- Capture mode — detach-only vs detach+clone ------------------
+  CaptureMode capture_mode = CaptureMode::REFERENCE;
+
   // -- Disk storage mode --------------------------------------------
   /// Root directory for per-layer .pt files when storage=DISK.
   /// Created in session_create, cleaned up in release().
@@ -111,7 +114,8 @@ struct SessionState {
 uint64_t session_create(StoragePolicy storage, ReductionPolicy reduction,
                         int64_t sample_every, int64_t max_batches,
                         int64_t auto_cpu_threshold_bytes, bool use_pinned,
-                        const std::string &session_dir = "");
+                        const std::string &session_dir = "",
+                        CaptureMode capture_mode = CaptureMode::REFERENCE);
 
 /// Destroy the session (drops hooks, clears vectors).  No-op if ID invalid.
 void session_destroy(uint64_t id);

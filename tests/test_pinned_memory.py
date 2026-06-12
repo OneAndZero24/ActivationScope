@@ -237,7 +237,7 @@ class TestPinnedEdgeCases:
     def test_pinned_reduction_registered(self, simple_linear_model):
         """register_reduction works when pinned=True."""
         t = ActivationScope(use_pinned=True, storage=StoragePolicy.CPU)
-        t.register_reduction(ActivationScope.for_mean(), layers=["fc*"])
+        t.register_reduction(ActivationScope.mean_reduction(), layers=["fc*"])
 
         with t.track(simple_linear_model):
             _ = simple_linear_model(torch.randn(2, 10))

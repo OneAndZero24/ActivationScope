@@ -9,6 +9,7 @@
 #include "session.hpp"
 #include "gil_utils.hpp"
 #include "hook_register.hpp"
+#include "utils.hpp"
 #include <Python.h>
 #include <pybind11/pybind11.h>
 
@@ -32,22 +33,6 @@ static std::atomic<uint64_t> g_session_counter{0};
 static std::mutex registry_mutex;
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
-
-/// Sanitize a layer name into a filesystem-safe directory/filename.
-static std::string sanitize_layer_name(const std::string &raw) {
-  std::string out;
-  out.reserve(raw.size());
-  for (char c : raw) {
-    if (c == '/' || c == '\\' || c == ':' || c == '?' || c == '*') {
-      out += '_';
-    } else if (c == '.') {
-      out += '_';
-    } else {
-      out += c;
-    }
-  }
-  return out;
-}
 
 /// Generate a unique temporary directory path for this session.
 static std::string make_session_temp_dir(uint64_t id) {
@@ -184,7 +169,8 @@ StoragePolicy LayerHookConfig::effective_storage() const {
 uint64_t session_create(StoragePolicy storage, ReductionPolicy reduction,
                         int64_t sample_every, int64_t max_batches,
                         int64_t auto_cpu_threshold_bytes, bool use_pinned,
-                        const std::string &session_dir) {
+                        const std::string &session_dir,
+                        CaptureMode capture_mode) {
   uint64_t id = g_session_counter.fetch_add(1, std::memory_order_relaxed) + 1;
 
   auto state = std::make_unique<SessionState>();
@@ -194,6 +180,7 @@ uint64_t session_create(StoragePolicy storage, ReductionPolicy reduction,
   state->max_batches = max_batches;
   state->auto_cpu_threshold_bytes = auto_cpu_threshold_bytes;
   state->use_pinned = use_pinned;
+  state->capture_mode = capture_mode;
 
   // If DISK storage is selected, set up the session directory.
   if (storage == StoragePolicy::DISK) {
@@ -319,8 +306,14 @@ void session_set_layer_reduction(uint64_t id, const std::string &layer_name,
   if (!state || !compiled_handle)
     return;
 
+  // Clone to give each LayerHookConfig its own owned handle — prevents
+  // double-free when a glob pattern matches multiple layers.
+  void *cloned = clone_compiled_handle(compiled_handle);
+  if (!cloned)
+    return;
+
   auto &cfg = state->layer_configs[layer_name];
-  cfg.reduce_fn = std::make_unique<CompiledFnHandle>(compiled_handle);
+  cfg.reduce_fn = std::make_unique<CompiledFnHandle>(cloned);
 }
 
 void session_set_global_reduction(uint64_t id, void *compiled_handle) {

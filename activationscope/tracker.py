@@ -2,7 +2,7 @@
 
 Session-scoped, zero-copy activation tracking via a native C++ backend.
 Three independently tunable policy knobs govern every aspect of memory
-and compute behavior (see StoragePolicy, ReductionPolicy, CapturePolicy).
+and compute behavior (see ``activationscope.policies``).
 """
 
 from contextlib import contextmanager
@@ -11,46 +11,16 @@ from typing import Callable, Dict, Generator, List, Optional, Any
 
 import torch
 import activationscope._C as _C
+from activationscope.policies import StoragePolicy, ReductionPolicy, CapturePolicy, CaptureMode
+from activationscope.utils import (
+    parse_capture_dir,
+    pattern_or_identity,
+    select_layers,
+    try_compile,
+    warmup,
+    load_raw_tensor,
+)
 
-
-# ──────────── Policy enums (mirror C++ enum values) ──────────────
-
-class _PolicyMeta(type):
-    """Metaclass that makes policy classes iterable and subscriptable."""
-
-    def __iter__(cls):
-        return iter(cls._members_)
-
-    def __class_getitem__(cls, item):
-        return cls._members_[item]
-
-
-class StoragePolicy(int, metaclass=_PolicyMeta):
-    """Where tensor data lives after capture."""
-    AUTO = 0    # Heuristic: < threshold → CPU, ≥ threshold → GPU
-    CPU  = 1    # Blocking transfer to host memory
-    GPU  = 2    # Stay on original device
-    DISK = 3    # Stream directly to disk; bypass in-memory accumulation
-
-    _members_ = (AUTO, CPU, GPU, DISK)
-
-
-class ReductionPolicy(int):
-    """What gets kept vs. reduced across batches."""
-    STORE_ALL  = 0  # Full tensor per batch appended
-    STREAMING  = 1  # Per-batch reduction output replaces/accumulates in-place
-    FINAL_ONLY = 2  # Last-batch activation overwrites previous
-
-
-class CapturePolicy(int, metaclass=_PolicyMeta):
-    """When and how often hooks fire."""
-    EVERY    = 0  # Every forward fires hooks
-    SAMPLE_N = 1  # Captures every Nth forward
-    MAX_K    = 2  # Captures exactly K batches then stops
-
-    _members_ = (EVERY, SAMPLE_N, MAX_K)
-
-# ──────────── ActivationScope class ──────────────────────────────
 
 class ActivationScope:
     """High-performance activation tracker backed by native C++.
@@ -63,15 +33,17 @@ class ActivationScope:
       pybind11 dispatch frame traverses the boundary, eliminating per-forward
       GIL + frame creation overhead.
 
-    * **Three policy knobs** control memory/compute independently:
+    * **Four policy knobs** control memory/compute independently:
 
         * ``StoragePolicy``  (AUTO, CPU, GPU, DISK) — where data lives after detach.
           Pinned-memory modifier enables async DMA for AUTO/CPU legs.
-          DISK mode streams tensors directly to .pt files, bypassing RAM entirely.
+          DISK mode streams tensors directly to .dat files, bypassing RAM entirely.
         * ``ReductionPolicy`` (STORE_ALL, STREAMING, FINAL_ONLY) — what gets
           kept vs. reduced across batches.
         * ``CapturePolicy``   (EVERY, SAMPLE_N, MAX_K) — capture cadence
           and safety rail against unbounded growth.
+        * ``CaptureMode``     (REFERENCE, SNAPSHOT) — whether to clone tensors
+          for independent storage after detach.
 
     Parameters
     ----------
@@ -89,6 +61,12 @@ class ActivationScope:
         Byte threshold for StoragePolicy.AUTO heuristic.  Default 1 MiB.
     use_pinned : bool
         When True, AUTO/CPU legs use pinned memory + non-blocking async DMA.
+    session_dir : str, optional
+        Directory for DISK-mode .dat file storage.
+    capture_mode : CaptureMode
+        Whether to clone captured tensors after detach.  REFERENCE (default)
+        shares storage with the autograd graph; SNAPSHOT creates an independent
+        copy for safe post‑capture mutation.
     """
 
     def __init__(
@@ -101,11 +79,11 @@ class ActivationScope:
         auto_cpu_threshold_bytes: int = 1_048_576,   # 1 MiB
         use_pinned: bool = False,
         session_dir: Optional[str] = None,  # DISK mode: where to store .dat files
+        capture_mode: CaptureMode = CaptureMode.REFERENCE,
     ):
         self._storage: int = int(storage)
         self._reduction: int = int(reduction)
 
-        _capture_int  = int(capture)
         _sample_every = sample_every if capture == CapturePolicy.SAMPLE_N else 1
         _max_batches  = max_batches  if capture == CapturePolicy.MAX_K    else 0
 
@@ -117,10 +95,11 @@ class ActivationScope:
             auto_cpu_threshold_bytes=auto_cpu_threshold_bytes,
             use_pinned=use_pinned,
             session_dir=session_dir or "",
+            capture_mode=int(capture_mode),
         )
 
-        # Per-layer registered reductions: pattern → (compiled_fn_handle, layer_names)
-        self._reductions: Dict[str, tuple] = {}
+        # Per-layer registered reductions: list of (compiled_fn_handle, layer_patterns)
+        self._reductions: list = []
         self._global_reduction = None
 
     # ── Properties ───────────────────────────────────────────────
@@ -160,8 +139,7 @@ class ActivationScope:
                 tensors = []
                 for fpath in file_paths:
                     try:
-                        t = _load_raw_tensor(fpath)
-                        tensors.append(t)
+                        tensors.append(load_raw_tensor(fpath))
                     except Exception:
                         pass
                 if tensors:
@@ -182,23 +160,27 @@ class ActivationScope:
 
     def register_reduction(
         self,
-        fn: Callable[[torch.Tensor], torch.Tensor],
+        fn: Callable[[Optional[torch.Tensor], torch.Tensor], torch.Tensor],
         layers: Optional[List[str]] = None,
     ) -> None:
-        """Register a callable as a compiled reduction.
+        """Register a stateful reduction callable.
 
-        The callable is compiled via ``torch.compile()`` for native execution
-        speed, a warm-up forward with a synthetic tensor runs immediately so the
-        first real batch never experiences cold-compile latency, and the compiled
-        handle is transferred to C++ storage.
+        The callable receives the current running accumulator (``None`` on the
+        first call) and the latest forward-pass tensor, and returns the updated
+        accumulator.  It is compiled via ``torch.compile()`` and transferred to
+        C++ for native execution.
 
         When *layers* is ``None``, fn becomes the **session-wide default** used
         as fallback for any layer without an explicit per-layer reduction.
 
         Parameters
         ----------
-        fn : Callable[[Tensor], Tensor]
-            Reduction callable operating on a single batch activation tensor.
+        fn : Callable[[Optional[Tensor], Tensor], Tensor]
+            Reduction callable (accumulator, new_tensor) → updated_accumulator.
+            Both arguments are views into C++‑owned storage — no copies are
+            made at the boundary.  The reduction may either mutate the
+            accumulator in‑place (return the same reference) or return a new
+            tensor.  In‑place is recommended for allocation‑free hot paths.
         layers : list[str] | None
             Layer-name glob patterns (``fnmatch`` style).  When ``None``, fn is
             set as the global default reduction for unmatched layers.
@@ -206,33 +188,74 @@ class ActivationScope:
         if self._session_id is None:
             raise RuntimeError("session already destroyed")
 
-        # Compile fn via torch.compile() when available, fall back to raw callable
-        compiled_fn = _try_compile(fn)
+        compiled_fn = try_compile(fn)
+        warmup(compiled_fn)
 
-        # Warm-up forward with synthetic tensor so first real batch is cold-free
-        _warmup(compiled_fn)
-
-        # Transfer handle to C++
         handle = _C.make_compiled_handle(compiled_fn)
 
         if layers is None:
-            # Global default fallback
             self._global_reduction = handle
             _C.set_global_reduction(self._session_id, handle)
         else:
-            # Store patterns for lazy matching at attach time; also resolve any
-            # already-attached modules immediately.
-            self._reductions[pattern_or_identity(fn)] = (handle, layers)
+            self._reductions.append((handle, layers))
 
     @classmethod
-    def for_max(cls):
-        """Return a callable that reduces to per-element max over dim 0."""
-        return lambda x: torch.amax(x, dim=0)
+    def min_reduction(cls):
+        """Return a stateful reduction: per-element min across all batches.
+
+        Signature: ``(running_min, new_tensor) -> updated_running_min``.
+        On first call (running_min is None), initialises from the first batch.
+        Mutates the accumulator **in-place** — no allocation on the hot path.
+        """
+        def _min(acc, new):
+            reduced = torch.amin(new, dim=0)
+            if acc is None:
+                return reduced
+            return torch.minimum(acc, reduced, out=acc)
+        return _min
 
     @classmethod
-    def for_mean(cls):
-        """Return a callable that reduces to per-element mean over dim 0."""
-        return lambda x: torch.mean(x.float(), dim=0)
+    def max_reduction(cls):
+        """Return a stateful reduction: per-element max across all batches.
+
+        Signature: ``(running_max, new_tensor) -> updated_running_max``.
+        On first call (running_max is None), initialises from the first batch.
+        Mutates the accumulator **in-place** — no allocation on the hot path.
+        """
+        def _max(acc, new):
+            reduced = torch.amax(new, dim=0)
+            if acc is None:
+                return reduced
+            return torch.maximum(acc, reduced, out=acc)
+        return _max
+
+    @classmethod
+    def mean_reduction(cls):
+        """Return a stateful reduction: per-element mean across all batches.
+
+        Uses a weighted running average so memory stays O(features) regardless
+        of batch count.  Mutates the accumulator **in-place** — no allocation.
+
+        Signature: ``(running_mean, new_tensor) -> updated_running_mean``.
+
+        Note
+        ----
+        The closure tracks a single global count shared across all layers this
+        reduction is registered for.  For per‑layer counts, register per‑layer
+        reductions with per‑layer closure dicts instead.
+        """
+        state = {"count": 0}
+
+        def _mean(acc, new):
+            batch_mean = torch.mean(new.float(), dim=0)
+            state["count"] += 1
+            if acc is None:
+                return batch_mean
+            # In-place weighted running average: acc = (1-w)*acc + w*batch
+            w = 1.0 / state["count"]
+            acc.mul_(1.0 - w).add_(batch_mean, alpha=w)
+            return acc
+        return _mean
 
     # ── Hook attach / detach ─────────────────────────────────────
 
@@ -245,11 +268,11 @@ class ActivationScope:
         exclude: Optional[List[str]] = None,
         capture: str = "output",
     ) -> Generator["ActivationScope", Any, None]:
-        """Context manager: attach → yield self → detach hooks + clear.
+        """Context manager: attach → yield self → detach hooks.
 
         Activations accumulate across all forward passes inside the block.
-        On exit, hooks are removed and activations are cleared, but the session
-        survives so ``track()`` can be called again on the same tracker.
+        On exit, hooks are removed but the session survives so ``track()``
+        can be called again on the same tracker.
 
         Parameters
         ----------
@@ -257,8 +280,8 @@ class ActivationScope:
             Target PyTorch model.
         layers : list[str] | None
             Glob patterns matched against ``model.named_modules()``.  When both
-            *layers* and *include* are ``None*, all non-container submodules are
-            selected.
+            *layers* and *include* are ``None``, all non-container submodules
+            are selected.
         include : list[str] | None
             Inclusion glob patterns (union).  Applied before *exclude*.
         exclude : list[str] | None
@@ -266,15 +289,12 @@ class ActivationScope:
         capture : str
             One of ``"output"`` (default), ``"input"``, or ``"both"``.
         """
-        self.clear()   # Remove leftover activations from any prior track() call.
+        self.clear()
         self.attach(model, layers=layers, include=include, exclude=exclude,
                     capture=capture)
         try:
             yield self
         finally:
-            # Detach hooks so next forward doesn't accumulate, but leave
-            # accumulated data intact so the caller can read .activations
-            # after the context exits.
             if self._session_id is not None:
                 _C.session_detach_hooks(self._session_id)
 
@@ -307,25 +327,21 @@ class ActivationScope:
         if self._session_id is None:
             raise RuntimeError("session already destroyed")
 
-        # Glob-based layer selection — locked at attach time (DESIGN.md §6.1)
-        selected = _select_layers(model, layers=layers, include=include,
-                                  exclude=exclude)
+        selected = select_layers(model, layers=layers, include=include,
+                                 exclude=exclude)
+        capture_dir_int = parse_capture_dir(capture)
 
-        # Validate capture direction
-        capture_dir_int = _parse_capture_dir(capture)
-
-        # Attach native C++ hooks for each selected layer
         id_self = self._session_id
         for layer_name, mod in selected.items():
-            module_ptr = id(mod)  # uintptr-like value for the module object
+            module_ptr = id(mod)
             _C.session_register_hooks(id_self, module_ptr, layer_name,
                                       capture_dir_int)
 
-            # Resolve per-layer reductions that match this layer (DESIGN.md §2.3)
-            for pattern in self._reductions:
-                if fnmatch(layer_name, pattern):
-                    handle = self._reductions[pattern][0]
-                    _C.set_layer_reduction(id_self, layer_name, handle)
+            for handle, layer_patterns in self._reductions:
+                for lp in layer_patterns:
+                    if fnmatch(layer_name, lp):
+                        _C.set_layer_reduction(id_self, layer_name, handle)
+                        break  # first matching pattern wins for this layer
 
     # ── Teardown ─────────────────────────────────────────────────
 
@@ -350,24 +366,22 @@ class ActivationScope:
             self._session_id = None
 
     def __del__(self) -> None:
-        """Destructor — ensures C++ session cleanup even if user forgets .remove()."""
         try:
             self.remove()
         except Exception:
-            pass  # safe no-op during interpreter shutdown
+            pass
 
-    # ── Parameter snapshotting (DESIGN.md §7) ─────────────────────
+    # ── Parameter snapshotting ────────────────────────────────────
 
     def capture_parameters(
         self,
         model: torch.nn.Module,
         layers: Optional[List[str]] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Snapshot baseline parameters for InTAct-style workflows.
+        """Snapshot baseline parameters for protection-loss workflows.
 
         Iterates ``model.named_parameters()``, applies optional glob filter,
-        then returns detached CPU clones.  Fully independent of C++ session —
-        no cross-boundary tensor copies.
+        then returns detached CPU clones.  Fully independent of C++ session.
 
         Parameters
         ----------
@@ -385,183 +399,8 @@ class ActivationScope:
         snapshot: Dict[str, torch.Tensor] = {}
         for pname, param in model.named_parameters():
             if layers is not None:
-                # Match against layer-name prefixes (strip trailing .weight/.bias)
                 base_name = pname.rsplit(".", 1)[0] if "." in pname else pname
                 if not any(fnmatch(base_name, pat) for pat in layers):
                     continue
             snapshot[pname] = param.detach().cpu().clone()
         return snapshot
-
-
-# ──────────── Helpers ─────────────────────────────────────────────
-
-def _parse_capture_dir(capture: str) -> int:
-    """Translate capture string to C++ enum int (CaptureDir)."""
-    mapping = {"input": 0, "output": 1, "both": 2}
-    cap = capture.lower()
-    if cap not in mapping:
-        raise ValueError(
-            f"capture must be 'input', 'output', or 'both'; got '{capture}'"
-        )
-    return int(mapping[cap])
-
-
-def _select_layers(
-    model: torch.nn.Module,
-    layers: Optional[List[str]] = None,
-    include: Optional[List[str]] = None,
-    exclude: Optional[List[str]] = None,
-) -> Dict[str, torch.nn.Module]:
-    """Apply glob filters to named_modules and return locked layer set.
-
-    Steps (DESIGN.md §6.1):
-        1. Enumerate model.named_modules()
-        2. If *include* is None → use all non-container submodules as baseline
-        3. Apply include patterns (fnmatch union)
-        4. Subtract exclude patterns
-    """
-    # Baseline: exclude container types and the root module itself
-    containers = (torch.nn.ModuleList, torch.nn.ModuleDict, torch.nn.Sequential)
-    all_modules: Dict[str, torch.nn.Module] = {
-        name: mod
-        for name, mod in model.named_modules()
-        if not isinstance(mod, containers) and name != ""
-    }
-
-    selected = all_modules  # start with everything
-
-    patterns = layers if include is None else include
-    if patterns:
-        # Intersection: only keep modules that match at least one pattern.
-        # Match against module name (e.g. "fc1"), module class name
-        # (e.g. "Linear"), and the compound "name.classname" form
-        # (e.g. "fc1.Linear") so patterns like "*.Linear*" work.
-        selected = {
-            name: mod for name, mod in selected.items()
-            if any(
-                fnmatch(name, pat)
-                or fnmatch(type(mod).__name__, pat)
-                or fnmatch(f"{name}.{type(mod).__name__}", pat)
-                for pat in patterns
-            )
-        }
-
-    if exclude:
-        # Subtractive: remove matches (same composite matching).
-        selected = {
-            name: mod for name, mod in selected.items()
-            if not any(
-                fnmatch(name, pat)
-                or fnmatch(type(mod).__name__, pat)
-                or fnmatch(f"{name}.{type(mod).__name__}", pat)
-                for pat in exclude
-            )
-        }
-
-    # Edge case: model is a leaf module with no non-container submodules
-    # at all (e.g., ``torch.nn.Linear`` on its own).  Only include the model
-    # itself when it literally has no children to track.
-    if not selected and not isinstance(model, containers):
-        if len(list(model.children())) == 0:
-            selected = {"": model}
-
-    return selected
-
-
-def _try_compile(
-    fn: Callable[[torch.Tensor], torch.Tensor]
-) -> Callable[[torch.Tensor], torch.Tensor]:
-    """Try to compile a reduction callable via torch.compile()."""
-    if hasattr(torch, "compile") and callable(torch.compile):
-        try:
-            return torch.compile(fn)       # type: ignore[return-value]
-        except (RuntimeError, TypeError):
-            pass                          # fall through to raw fn
-    return fn
-
-
-def _warmup(
-    compiled_fn: Callable[[torch.Tensor], torch.Tensor]
-) -> None:
-    """Execute a synthetic warm-up forward so first real batch is not cold-start."""
-    try:
-        dummy = torch.randn(2, 64, dtype=torch.float32)
-        _ = compiled_fn(dummy)
-    except Exception:
-        pass  # non-fatal; surface at registration if critical
-
-
-def pattern_or_identity(fn: Callable[..., Any]) -> str:
-    """Derive a simple matchable key for an arbitrary callable.
-
-    Used as a rough pattern when the user passes fn but no explicit layer list —
-    not ideal, but provides a fallback so register_reduction without *layers*
-    can still be stored in ``self._reductions`` without colliding with the
-    global default path.
-    """
-    return getattr(fn, "__name__", repr(fn))
-
-
-def _load_raw_tensor(filepath: str) -> torch.Tensor:
-    """Load a tensor from the raw binary .dat format written by the C++ DISK path.
-
-    File layout (all little-endian int64):
-        [dtype: int64][ndim: int64][dim0..dimN: int64][raw data bytes]
-
-    This matches the format produced by callback.cpp's write path.
-    """
-    import struct
-    import numpy as np
-
-    with open(filepath, "rb") as f:
-        # Read header: dtype, ndim
-        header = f.read(16)
-        if len(header) < 16:
-            raise ValueError(f"Truncated .dat file: {filepath}")
-        dtype_code, ndim = struct.unpack("<qq", header)
-
-        # Read shape
-        shape = []
-        for _ in range(ndim):
-            dim_bytes = f.read(8)
-            if len(dim_bytes) < 8:
-                raise ValueError(f"Truncated shape in .dat file: {filepath}")
-            dim, = struct.unpack("<q", dim_bytes)
-            shape.append(dim)
-
-        # Read raw data
-        data = f.read()
-
-    # Map int64 dtype code back to torch dtype
-    # Map ATen ScalarType int to torch dtype (C++ enum: Byte=0, Char=1, ..., Float=6, ...)
-    dtype_map = {
-        0: torch.uint8,     1: torch.int8,      2: torch.int16,
-        3: torch.int32,     4: torch.int64,     5: torch.float16,
-        6: torch.float32,   7: torch.float64,   8: torch.complex64,
-        9: torch.complex64, 10: torch.complex128, 11: torch.bool,
-        12: torch.qint8,    13: torch.quint8,   14: torch.qint32,
-        15: torch.bfloat16,
-    }
-    torch_dtype = dtype_map.get(dtype_code, torch.float32)
-
-    np_array = np.frombuffer(data, dtype=torch_to_numpy_dtype(torch_dtype))
-    tensor = torch.from_numpy(np_array.copy().reshape(shape))
-    return tensor.contiguous()
-
-
-def torch_to_numpy_dtype(torch_dtype: torch.dtype):
-    """Convert torch dtype to numpy dtype for buffer reading."""
-    import numpy as np
-    dtype_map = {
-        torch.float32: np.float32,
-        torch.float64: np.float64,
-        torch.float16: np.float16,
-        torch.bfloat16: np.uint16,  # bfloat16 stored as uint16
-        torch.int8: np.int8,
-        torch.int16: np.int16,
-        torch.int32: np.int32,
-        torch.int64: np.int64,
-        torch.uint8: np.uint8,
-        torch.bool: np.bool_,
-    }
-    return dtype_map.get(torch_dtype, np.float32)

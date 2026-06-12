@@ -118,7 +118,7 @@ class TestMultipleCyclesNoLeak:
     def test_no_accumulation_with_streaming(self, simple_linear_model):
         """STREAMING + reduction should stay bounded across many batches."""
         t = ActivationScope(reduction=ReductionPolicy.STREAMING)
-        t.register_reduction(ActivationScope.for_max(), layers=None)
+        t.register_reduction(ActivationScope.max_reduction(), layers=None)
 
         with t.track(simple_linear_model):
             for _ in range(100):

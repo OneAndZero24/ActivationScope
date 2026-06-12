@@ -178,27 +178,34 @@ class TestRegisterReduction:
     def test_global_reduction(self, simple_linear_model):
         """Global reduction (layers=None) is settable without error."""
         t = ActivationScope()
-        t.register_reduction(ActivationScope.for_max(), layers=None)
+        t.register_reduction(ActivationScope.max_reduction(), layers=None)
         t.remove()
 
     def test_per_layer_reduction(self, simple_linear_model):
         """Per-layer reduction with explicit layer list works."""
         t = ActivationScope()
-        t.register_reduction(ActivationScope.for_mean(), layers=["fc1"])
+        t.register_reduction(ActivationScope.mean_reduction(), layers=["fc1"])
         t.attach(simple_linear_model)
         t.remove()
 
-    def test_for_max_returns_callable(self):
-        fn = ActivationScope.for_max()
+    def test_max_reduction_returns_callable(self):
+        fn = ActivationScope.max_reduction()
         x = torch.randn(4, 8)
-        result = fn(x)
+        result = fn(None, x)
         assert result.shape == (8,)
+        # Second call updates the running max
+        y = torch.randn(4, 8)
+        result2 = fn(result, y)
+        assert result2.shape == (8,)
 
-    def test_for_mean_returns_callable(self):
-        fn = ActivationScope.for_mean()
+    def test_mean_reduction_returns_callable(self):
+        fn = ActivationScope.mean_reduction()
         x = torch.randn(4, 8)
-        result = fn(x)
+        result = fn(None, x)
         assert result.shape == (8,)
+        y = torch.randn(4, 8)
+        result2 = fn(result, y)
+        assert result2.shape == (8,)
 
 
 class TestAttachAfterDestroy:
@@ -214,4 +221,4 @@ class TestAttachAfterDestroy:
         t = ActivationScope()
         t.remove()
         with pytest.raises(RuntimeError, match="session already destroyed"):
-            t.register_reduction(lambda x: x.mean(), layers=["fc"])
+            t.register_reduction(lambda acc, x: x.mean(dim=0), layers=["fc"])

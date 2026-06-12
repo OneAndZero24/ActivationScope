@@ -1,15 +1,12 @@
-"""Public API for ActivationScope v2 (session-scoped, zero-copy, native hooks)."""
+"""Public API for ActivationScope — session-scoped, zero-copy, native hooks."""
 
-from activationscope.tracker import (
-    ActivationScope,
-    StoragePolicy,
-    ReductionPolicy,
-    CapturePolicy,
-)
+from activationscope.policies import StoragePolicy, ReductionPolicy, CapturePolicy, CaptureMode
+from activationscope.tracker import ActivationScope
 
 __all__ = [
     "ActivationScope",
     "StoragePolicy",
     "ReductionPolicy",
     "CapturePolicy",
+    "CaptureMode",
 ]

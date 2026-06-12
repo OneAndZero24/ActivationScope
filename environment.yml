@@ -22,6 +22,7 @@ dependencies:
   # --- Dev utilities ---
   - ruff
   - pyyaml
+  - psutil
 
   # --- PyTorch (CPU for local dev; CI Docker uses CUDA wheels) ---
   # To switch to CUDA for GPU development, replace "cpu" with your CUDA version:

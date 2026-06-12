@@ -122,7 +122,7 @@ class TestResidualModel:
     def test_residual_with_streaming(self, residual_model):
         """STREAMING reduction on residual blocks."""
         t = ActivationScope(reduction=ReductionPolicy.STREAMING)
-        t.register_reduction(ActivationScope.for_max(), layers=["fc*"])
+        t.register_reduction(ActivationScope.max_reduction(), layers=["fc*"])
 
         with t.track(residual_model):
             for _ in range(50):
@@ -304,8 +304,8 @@ class TestComplexModelStress:
     def test_deep_with_reduction(self, deep_model):
         """register_reduction works on many layers via glob."""
         t = ActivationScope(reduction=ReductionPolicy.STREAMING)
-        t.register_reduction(ActivationScope.for_max(), layers=["layers.*"])
-        t.register_reduction(ActivationScope.for_mean(), layers=["acts.*"])
+        t.register_reduction(ActivationScope.max_reduction(), layers=["layers.*"])
+        t.register_reduction(ActivationScope.mean_reduction(), layers=["acts.*"])
 
         with t.track(deep_model):
             for _ in range(10):
@@ -379,8 +379,8 @@ class TestAttentionModel:
     def test_transformer_with_reductions(self, transformer_block):
         """Register different reductions for attention vs FF layers."""
         t = ActivationScope(reduction=ReductionPolicy.STREAMING)
-        t.register_reduction(ActivationScope.for_max(), layers=["self_attn*"])
-        t.register_reduction(ActivationScope.for_mean(), layers=["linear*"])
+        t.register_reduction(ActivationScope.max_reduction(), layers=["self_attn*"])
+        t.register_reduction(ActivationScope.mean_reduction(), layers=["linear*"])
 
         with t.track(transformer_block):
             for _ in range(10):

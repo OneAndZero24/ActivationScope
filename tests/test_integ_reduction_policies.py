@@ -46,7 +46,7 @@ class TestStreaming:
     def test_streaming_produces_single_tensor(self, simple_linear_model):
         """With reduction registered, STREAMING should keep one reduced tensor."""
         t = ActivationScope(reduction=ReductionPolicy.STREAMING)
-        t.register_reduction(ActivationScope.for_max(), layers=None)
+        t.register_reduction(ActivationScope.max_reduction(), layers=None)
 
         with t.track(simple_linear_model):
             for _ in range(5):
@@ -75,7 +75,7 @@ class TestRegisterReductionPerLayer:
     def test_per_layer_reduction_applied(self, simple_linear_model):
         """A reduction registered for a specific layer name is matched correctly."""
         t = ActivationScope(reduction=ReductionPolicy.STREAMING)
-        t.register_reduction(ActivationScope.for_max(), layers=["fc1"])
+        t.register_reduction(ActivationScope.max_reduction(), layers=["fc1"])
         t.attach(simple_linear_model)
 
         x = torch.randn(2, 10)
@@ -89,9 +89,9 @@ class TestGlobalReductionFallback:
         """When a layer has no per-layer reduction, global default is used."""
         t = ActivationScope(reduction=ReductionPolicy.STREAMING)
         # Register global fallback
-        t.register_reduction(ActivationScope.for_mean(), layers=None)
+        t.register_reduction(ActivationScope.mean_reduction(), layers=None)
         # Also register a per-layer override for fc1
-        t.register_reduction(ActivationScope.for_max(), layers=["fc1"])
+        t.register_reduction(ActivationScope.max_reduction(), layers=["fc1"])
 
         with t.track(simple_linear_model):
             _ = simple_linear_model(torch.randn(2, 10))
@@ -103,7 +103,7 @@ class TestConvWithReduction:
     def test_streaming_on_conv(self, conv_model):
         """STREAMING + for_max on Conv2d produces [C_out, H, W] shaped tensors."""
         t = ActivationScope(reduction=ReductionPolicy.STREAMING)
-        t.register_reduction(ActivationScope.for_max(), layers=["conv*"])
+        t.register_reduction(ActivationScope.max_reduction(), layers=["conv*"])
 
         with t.track(conv_model, include=["conv*", "pool"]):
             _ = conv_model(torch.randn(2, 3, 16, 16))

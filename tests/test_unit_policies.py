@@ -12,8 +12,8 @@ from activationscope import (
     ReductionPolicy,
     CapturePolicy,
 )
-from activationscope.tracker import (
-    _parse_capture_dir,
+from activationscope.utils import (
+    parse_capture_dir,
     pattern_or_identity,
 )
 
@@ -76,7 +76,7 @@ class TestCapturePolicyEnum:
 
 
 class TestParseCaptureDir:
-    """_parse_capture_dir(capture_str) → int mapping and error handling."""
+    """parse_capture_dir(capture_str) → int mapping and error handling."""
 
     @pytest.mark.parametrize(
         ("input_str", "expected"),
@@ -90,7 +90,7 @@ class TestParseCaptureDir:
         ],
     )
     def test_valid_inputs(self, input_str, expected):
-        assert _parse_capture_dir(input_str) == expected
+        assert parse_capture_dir(input_str) == expected
 
     @pytest.mark.parametrize(
         "bad_input",
@@ -105,7 +105,7 @@ class TestParseCaptureDir:
     )
     def test_invalid_inputs_raise(self, bad_input):
         with pytest.raises((ValueError, AttributeError)):
-            _parse_capture_dir(bad_input)
+            parse_capture_dir(bad_input)
 
 
 class TestPatternOrIdentity:

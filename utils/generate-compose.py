@@ -21,18 +21,18 @@ COMPOSE_HEADER = """\
 """
 
 SVC_TEMPLATE = '''\
-{label}:
-    build:
-        context: ..
-        dockerfile: .docker/Dockerfile
-        args:
-            PYTHON_VERSION: "{py}"
-            PYTORCH_VERSION: "{torch}"
-            PLATFORM: "{platform}"
-    volumes:
-        - ../activationscope:/src/activationscope
-        - ../csrc:/src/csrc
-        - ../tests:/src/tests
+  {label}:
+      build:
+          context: ..
+          dockerfile: .docker/Dockerfile
+          args:
+              PYTHON_VERSION: "{py}"
+              PYTORCH_VERSION: "{torch}"
+              PLATFORM: "{platform}"
+      volumes:
+          - ../activationscope:/src/activationscope
+          - ../csrc:/src/csrc
+          - ../tests:/src/tests
 '''
 
 

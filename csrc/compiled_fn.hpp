@@ -36,6 +36,11 @@ namespace activationscope {
 /// Factory: create an opaque PyObject*-backed compiled handle from a raw pointer.
 void* make_compiled_handle(PyObject* fn);
 
+/// Clone a compiled handle — each clone owns its own PyObject* reference.
+/// Needed when the same handle must be assigned to multiple LayerHookConfig
+/// entries (e.g. a glob pattern matching several layers).
+void* clone_compiled_handle(void* handle);
+
 /**
  * Opaque handle wrapping a compiled Python callable.
  *
@@ -69,9 +74,12 @@ public:
     /// Whether this handle points at a live compiled function.
     explicit operator bool() const noexcept { return m_handle != nullptr; }
 
-    /// Execute the compiled reduction on the input tensor.  Runs under
-    /// torch::NoGradGuard (called by hook_callback which already wraps).
-    torch::Tensor execute(torch::Tensor tensor) const;
+    /// Execute the compiled reduction with the running accumulator and new tensor.
+    /// Runs under torch::NoGradGuard (called by hook_callback which already wraps).
+    /// @param acc   Current accumulated tensor (empty/undefined on first call).
+    /// @param tensor  New forward-pass activation tensor.
+    /// @returns  Updated accumulator tensor.
+    torch::Tensor execute(torch::Tensor acc, torch::Tensor tensor) const;
 
 private:
     void reset();

@@ -9,7 +9,7 @@ Built on Python + C++ with native `libtorch` hooks and `torch.compile` reduction
 **Key Benefits**
 - Zero‑copy read‑back: activation tensors are shared between C++ and Python without extra copies.
 - Native C++ hooks: no Python dispatch overhead per forward pass.
-- Flexible policy knobs (`StoragePolicy`, `ReductionPolicy`, `CapturePolicy`) let you balance memory, compute, and I/O.
+- Flexible policy knobs (`StoragePolicy`, `ReductionPolicy`, `CapturePolicy`, `CaptureMode`) let you balance memory, compute, and I/O.
 - Direct-to-disk streaming (`StoragePolicy.DISK`) — activations are written directly from C++ to disk. Ideal for long-running training loops with very large models. Activations are read back on demand from `.dat` files.
 - Works with large models (e.g., diffusion) and supports streaming statistics for online use cases.
 
@@ -19,7 +19,7 @@ Built on Python + C++ with native `libtorch` hooks and `torch.compile` reduction
 
 Every tracked layer stores full activations by default — no registration needed:
 
-```
+```python
 import activationscope
 
 with activationscope.ActivationScope().track(model) as tracker:

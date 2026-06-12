@@ -46,4 +46,10 @@ enum class CaptureDir : int32_t {
     BOTH   = 2,
 };
 
+/// Whether to clone captured tensors (independent copy vs shared storage).
+enum class CaptureMode : int32_t {
+    REFERENCE = 0,  ///< detach() only — shares storage with autograd graph
+    SNAPSHOT  = 1,  ///< detach() + clone() — completely independent copy
+};
+
 } // namespace activationscope

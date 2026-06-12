@@ -22,16 +22,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "session_create",
       [](int32_t storage, int32_t reduction, int64_t sample_every,
          int64_t max_batches, int64_t auto_cpu_threshold_bytes, bool use_pinned,
-         const std::string &session_dir) -> uint64_t {
+         const std::string &session_dir, int32_t capture_mode) -> uint64_t {
         return activationscope::session_create(
             static_cast<activationscope::StoragePolicy>(storage),
             static_cast<activationscope::ReductionPolicy>(reduction),
             sample_every, max_batches, auto_cpu_threshold_bytes, use_pinned,
-            session_dir);
+            session_dir,
+            static_cast<activationscope::CaptureMode>(capture_mode));
       },
       py::arg("storage"), py::arg("reduction"), py::arg("sample_every"),
       py::arg("max_batches"), py::arg("auto_cpu_threshold_bytes"),
       py::arg("use_pinned"), py::arg("session_dir") = std::string(""),
+      py::arg("capture_mode") = 0,
       "Create new session, return uint64_t ID.");
 
   m.def("session_destroy", &activationscope::session_destroy, py::arg("id"),

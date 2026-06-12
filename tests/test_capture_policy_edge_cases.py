@@ -113,7 +113,7 @@ class TestMaxKEdgeCases:
             capture=CapturePolicy.MAX_K,
             max_batches=4,
         )
-        t.register_reduction(ActivationScope.for_max(), layers=None)
+        t.register_reduction(ActivationScope.max_reduction(), layers=None)
 
         with t.track(simple_linear_model):
             for _ in range(30):
@@ -162,7 +162,7 @@ class TestMixedPolicyCombinations:
             max_batches=4,    # for MAX_K
         )
         if reduction == ReductionPolicy.STREAMING:
-            t.register_reduction(ActivationScope.for_max(), layers=None)
+            t.register_reduction(ActivationScope.max_reduction(), layers=None)
 
         with t.track(simple_linear_model):
             x = torch.randn(2, 10, requires_grad=True)
@@ -222,7 +222,7 @@ class TestMultipleTrackers:
         for cfg in tracker_cfgs:
             t = ActivationScope(**cfg)
             if cfg.get("reduction") == ReductionPolicy.STREAMING:
-                t.register_reduction(ActivationScope.for_max(), layers=None)
+                t.register_reduction(ActivationScope.max_reduction(), layers=None)
             trackers.append(t)
 
         # Attach all to the same model (different layer subsets)

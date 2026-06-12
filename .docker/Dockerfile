@@ -1,10 +1,13 @@
 # ActivationScope Dockerfile
 
+# Stage‑0 build args — only visible to FROM lines below.
 ARG PYTHON_VERSION=3.10
-ARG PYTORCH_VERSION=2.5.1
-ARG PLATFORM=cpu
 
 FROM python:${PYTHON_VERSION}-slim
+
+# Re‑declare args so they are visible inside the build stage.
+ARG PYTORCH_VERSION=2.5.1
+ARG PLATFORM=cpu
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git g++ build-essential && \

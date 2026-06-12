@@ -7,7 +7,7 @@ from torch.utils.cpp_extension import BuildExtension, CppExtension
 
 sources = [
     "csrc/bindings.cpp",        # PYBIND11_MODULE entry point
-    "csrc/reduction.cpp",       # TorchScript reduction wrapper (zero‑GIL)
+    "csrc/reduction.cpp",       # TorchScript reduction wrapper
     "csrc/callback.cpp",        # hook_callback hot path (C++ only)
     "csrc/hook_register.cpp",   # register via Python module API + thunk
     "csrc/session.cpp",         # session lifecycle + global registry

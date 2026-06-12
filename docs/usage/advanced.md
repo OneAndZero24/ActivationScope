@@ -101,7 +101,7 @@ tracker = ActivationScope(capture_mode=CaptureMode.SNAPSHOT)
 | `REFERENCE` | `.detach()` only — shares `TensorImpl` | Read‑only analysis; best performance |
 | `SNAPSHOT` | `.detach()` + `.clone()` — independent tensor | Tensors may be mutated after capture; protection‑loss loops |
 
-The native C++ backend implements `SNAPSHOT` as `result = result.clone()` in the hook callback — zero Python overhead. The pure‑Python tracker (`_naive.py`) also supports both modes.
+The C++ backend implements `SNAPSHOT` as `result = result.clone()` in the hook callback. The pure‑Python tracker (`_naive.py`) also supports both modes.
 
 ## Zero‑Copy Guarantees & Read‑Only Views
 All tensors returned via ``tracker.activations`` share the underlying `TensorImpl` with the C++ storage. They are **read‑only**; any in‑place operation raises a `RuntimeError`. To modify a tensor you must ``clone()`` it first:

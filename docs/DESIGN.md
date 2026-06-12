@@ -2,7 +2,7 @@
 
 ## Abstract
 
-ActivationScope is a high‑performance PyTorch activation tracking library built on a **pure C++ backend** with **TorchScript JIT‑compiled reductions**. Forward‑pass hooks fire as pure C++ lambdas that call `torch::jit::script::Module` directly — **zero Python objects**, **zero GIL**, **zero dict lookups**, **zero serialisation** on the hot path.
+ActivationScope is a high‑performance PyTorch activation tracking library built on a **C++ backend** with **TorchScript JIT‑compiled reductions**. Forward‑pass hooks fire as pybind11 thunks that extract the tensor under GIL, then release the GIL and call a C++ hot path that invokes `torch::jit::script::Module` — **no Python callbacks**, **no dict lookups**, **no serialisation** during reduction.
 
 Four orthogonal policy knobs — storage, reduction, capture, capture‑mode — govern every aspect of memory, compute, and I/O. Zero‑copy readback ensures Python views C++ tensor storage directly without copies.
 
@@ -39,7 +39,7 @@ ActivationScope eliminates this entirely by moving the hook callback into C++ an
 │ SessionState (global registry, uint64_t key)  │
 │ LayerHookConfig → shared_ptr<Reduction>      │
 │ LayerAccumulator (mutex‑guarded vector)       │
-│ hook_callback() ← pure C++, no GIL            │
+│ hook_callback() ← C++ hot path                │
 └──────────────────┬──────────────────────────────┘
                   │ torch::jit::Module::forward
 ┌──────────────────┼──────────────────────────────┐
@@ -71,7 +71,7 @@ ActivationScope eliminates this entirely by moving the hook callback into C++ an
 | `m_hook_handles` | `vector<pair<string, void*>>` — pybind11 hook handles for `.remove()` cleanup |
 | Policy fields | `StoragePolicy`, `ReductionPolicy`, `CapturePolicy`, `CaptureMode`, thresholds |
 
-`csrc/callback.cpp` implements the **hot path** — the pure C++ function called by every registered hook:
+`csrc/callback.cpp` implements the **hot path** — the C++ function called by every registered hook:
 
 ```cpp
 void hook_callback(SessionState*         state,
@@ -87,7 +87,7 @@ void hook_callback(SessionState*         state,
     { lock_guard<mutex> lk(accum->mtx);
       if (auto* last = accum->data.last()) acc = *last; }
 
-    // Reduction — zero GIL, pure C++/TorchScript
+    // Reduction — TorchScript via C++
     Tensor result = cfg->reduction
         ? cfg->reduction->run(acc, tensor)
         : tensor;
@@ -102,7 +102,7 @@ void hook_callback(SessionState*         state,
 }
 ```
 
-**Key invariants**: no Python objects, no GIL, no dict lookups, no string comparisons. The closure captures `LayerHookConfig*` and `shared_ptr<LayerAccumulator>` directly — all resolution happens once at hook‑registration time.
+**Key invariants**: no Python callbacks, no dict lookups, no string comparisons during reduction. The closure captures `LayerHookConfig*` and `shared_ptr<LayerAccumulator>` directly — all resolution happens once at hook‑registration time.
 
 ### 2.3 TorchScript Compute Graph
 
@@ -127,7 +127,7 @@ public:
 };
 ```
 
-The `run()` method is **pure C++** — no Python interpreter, no GIL, no `PyObject` creation. The `const_cast` is a known TorchScript limitation (`forward()` on `Module` is non‑const); it is safe because the hook callback is not re‑entrant on the same module.
+The `run()` method is **C++ only** — no `PyObject` creation. The `const_cast` is a known TorchScript limitation (`forward()` on `Module` is non‑const); it is safe because the hook callback is not re‑entrant on the same module.
 
 ---
 
@@ -149,11 +149,11 @@ def my_reduce(acc: Optional[torch.Tensor], new: torch.Tensor) -> torch.Tensor:
 tracker.register_reduction(my_reduce, layers=["fc1", "fc2"])
 ```
 
-The C++ `Reduction::run()` method calls `module_.forward(acc, tensor)` directly — **zero GIL, zero Python objects, zero serialisation**.
+The C++ `Reduction::run()` method calls `module_.forward(acc, tensor)` directly — **no Python objects, no serialisation**.
 
 **Type annotations are mandatory:** the accumulator must be typed `Optional[torch.Tensor]`. TorchScript cannot infer optionality from `is None` checks alone — the explicit type hint is required for correct graph compilation.
 
-**Why not `torch.compile`?** `torch.compile` produces an `torch._inductor` graph that still requires a Python call boundary to invoke. `torch.jit.script` produces a fully serialised `torch::jit::script::Module` that can be loaded and called from pure C++ with no interpreter involvement.
+**Why TorchScript over `torch.compile`?** `torch.compile` produces a graph that requires a Python call boundary to invoke. `torch.jit.script` produces a fully serialised `torch::jit::script::Module` that can be loaded and called from C++ with no interpreter involvement.
 
 ### 3.2 State Embedded in Tensor (No C++ Sidecar Structs)
 
@@ -213,7 +213,7 @@ Session destruction atomically:
 
 ### 3.6 Per‑Layer Reduction with Global Fallback
 
-Resolution order at hook‑fire time: **per‑layer config → session‑wide default → identity** (store full tensor). Resolved once at attach time; no Python involved on the hot path.
+Resolution order at hook‑fire time: **per‑layer config → session‑wide default → identity** (store full tensor). Resolved once at attach time.
 
 ```python
 # Global default
@@ -231,7 +231,7 @@ The hook callback is a `py::cpp_function` thunk that:
 
 1. **Extracts the tensor** from the Python `output` / `input` tuple — GIL held (required for pybind11 casts).
 2. **Releases the GIL** via `py::gil_scoped_release`.
-3. **Calls the pure C++ hot path** — `hook_callback(state, cfg, accum, layer_key, tensor)`.
+3. **Calls the C++ hot path** — `hook_callback(state, cfg, accum, layer_key, tensor)`.
 4. **Re‑acquires the GIL** on scope exit.
 
 ```cpp
@@ -240,7 +240,7 @@ auto thunk = py::cpp_function(
         // 1) Extract tensor — GIL held
         Tensor tensor = output_obj.cast<Tensor>();
 
-        // 2) C++ hot path — GIL released
+        // 2) C++ hot path
         {
             py::gil_scoped_release release;
             hook_callback(state, cfg, accum, layer_key, tensor);
@@ -256,36 +256,42 @@ auto thunk = py::cpp_function(
 ## 4. Hook Callback Hot Path (Detailed)
 
 ```
-HOOK FIRES (C++ lambda, GIL released)
-│
-├── NoGradGuard — autograd isolation
-│
-├── EARLY EXIT (capture_policy.cpp, lock‑free atomic)
-│   ├── EVERY    → always proceed
-│   ├── SAMPLE_N → batch_counter.fetch_add(1) % N == 0
-│   └── MAX_K    → stop after K batches (counter reaches limit)
-│
-├── LOAD ACCUMULATOR (under per‑layer mutex, brief)
-│   Read LayerAccumulator.data.last() → nullptr on first call
-│
-├── REDUCTION (zero GIL via TorchScript module)
-│   cfg.reduction->run(acc, tensor) → updated accumulator
-│   or identity → store full tensor
-│
-├── DETACH + optional CLONE (CaptureMode::SNAPSHOT)
-│
-├── STORAGE POLICY — device placement
-│   ├── GPU  → stay on device
-│   ├── CPU  → .to(kCPU), optionally pinned
-│   ├── AUTO → heuristic: < threshold → CPU, ≥ threshold → GPU
-│   └── DISK → CPU + serialize to .dat file
-│
-├── ACCUMULATE (under mutex, minimal scope)
-│   ├── Stateful reduction → replace_last() (single entry)
-│   ├── STORE_ALL / STREAMING → append()
-│   └── FINAL_ONLY → clear + append()
-│
-└── DISK path → write <session_dir>/<layer>/<batch_idx>.dat
+HOOK FIRES (pybind11 thunk, GIL held for tensor extraction)
+
+├── EXTRACT TENSOR — pybind11 cast, GIL held (microseconds)
+
+├── GIL RELEASED — C++ hot path starts
+
+│   ├── NoGradGuard — autograd isolation
+│   │
+│   ├── EARLY EXIT (capture_policy.cpp, lock‑free atomic)
+│   │   ├── EVERY    → always proceed
+│   │   ├── SAMPLE_N → batch_counter.fetch_add(1) % N == 0
+│   │   └── MAX_K    → stop after K batches (counter reaches limit)
+│   │
+│   ├── LOAD ACCUMULATOR (under per‑layer mutex, brief)
+│   │   Read LayerAccumulator.data.last() → nullptr on first call
+│   │
+│   ├── REDUCTION (TorchScript module)
+│   │   cfg.reduction->run(acc, tensor) → updated accumulator
+│   │   or identity → store full tensor
+│   │
+│   ├── DETACH + optional CLONE (CaptureMode::SNAPSHOT)
+│   │
+│   ├── STORAGE POLICY — device placement
+│   │   ├── GPU  → stay on device
+│   │   ├── CPU  → .to(kCPU), optionally pinned
+│   │   ├── AUTO → heuristic: < threshold → CPU, ≥ threshold → GPU
+│   │   └── DISK → CPU + serialize to .dat file
+│   │
+│   ├── ACCUMULATE (under mutex, minimal scope)
+│   │   ├── Stateful reduction → replace_last() (single entry)
+│   │   ├── STORE_ALL / STREAMING → append()
+│   │   └── FINAL_ONLY → clear + append()
+│   │
+│   └── DISK path → write <session_dir>/<layer>/<batch_idx>.dat
+
+└── GIL RE‑ACQUIRED on thunk return
 ```
 
 ### 4.1 Temporal Ordering
@@ -542,7 +548,7 @@ csrc/
 ├── callback.cpp/.hpp     HOT PATH — reduction, detach, storage, accumulate
 ├── hook_register.cpp/.hpp Hook registration on nn.Module via pybind11
 ├── capture_policy.cpp/.hpp Atomic capture‑policy enforcement
-├── reduction.hpp/.cpp    TorchScript module wrapper — zero‑GIL forward()
+├── reduction.hpp/.cpp    TorchScript module wrapper
 ├── accumulator.hpp       ActivationAccumulator + LayerAccumulator (mutex‑guarded)
 ├── datastructures.hpp    Shared enums (StoragePolicy, ReductionPolicy, etc.)
 ├── callback.hpp          Hook callback signature
@@ -644,10 +650,10 @@ ruff check activationscope/ tests/ && black --check .
 
 The following invariants must hold for every code change:
 
-- [ ] No Python dispatch on the hot path. The hook callback is pure C++.
-- [ ] No GIL held during reduction execution. The reduction runs inside `py::gil_scoped_release`.
+- [ ] No Python callbacks on the hot path. The reduction runs via TorchScript in C++.
+- [ ] The GIL is released during reduction execution (inside `py::gil_scoped_release`).
 - [ ] No dict lookups after hook registration. The closure captures direct pointers.
-- [ ] Tensor extraction (`.cast<Tensor>()`, `PyTuple_Check`) happens **before** GIL release.
+- [ ] Tensor extraction (`.cast<Tensor>()`, `PyTuple_Check`) happens under GIL — the GIL is only released after extraction.
 - [ ] State lives in tensors, not Python closures, not C++ sidecar structs.
 - [ ] Temporary `.pt` files are cleaned in Python `remove()`. C++ never touches them after load.
 - [ ] `last()` pointer is only used inside the mutex‑protected block — no dangling references.

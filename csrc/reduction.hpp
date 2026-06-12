@@ -1,8 +1,8 @@
 /*
- * ActivationScope — TorchScript reduction wrapper, zero‑GIL.
+ * ActivationScope — TorchScript reduction wrapper.
  *
  * Wraps a torch::jit::script::Module loaded from a .pt file.
- * run() calls forward() directly — no GIL, no Python, no serialisation.
+ * run() calls forward() directly — no serialisation.
  */
 #pragma once
 
@@ -25,7 +25,7 @@ public:
     Reduction& operator=(const Reduction&) = delete;
 
     /// Run forward(acc, tensor).  acc may be undefined (first call).
-    /// Returns updated accumulator tensor.  Pure C++ — never touches Python.
+    /// Returns updated accumulator tensor.
     torch::Tensor run(const torch::Tensor& acc, const torch::Tensor& tensor) const;
 
 private:

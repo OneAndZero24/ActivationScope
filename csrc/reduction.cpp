@@ -1,5 +1,5 @@
 /*
- * ActivationScope — Reduction implementation: load + run + no GIL.
+ * ActivationScope — Reduction implementation: load + run.
  */
 #include "reduction.hpp"
 

@@ -1,10 +1,10 @@
 /*
- * ActivationScope — Hook callback hot path, pure C++.
+ * ActivationScope — Hook callback hot path.
  *
- * Called by native libtorch hooks.  Zero Python overhead:
+ * Called by registration thunks.  Avoids overhead:
  *   - NoGradGuard isolation
  *   - Lock-free capture policy early-exit
- *   - TorchScript reduction via Reduction::run() (no GIL)
+ *   - TorchScript reduction via Reduction::run()
  *   - .detach() + optional .clone()
  *   - Storage policy device placement
  *   - Accumulate under mutex
@@ -86,7 +86,7 @@ void hook_callback(SessionState*              state,
         if (last) acc = *last;
     }
 
-    // 3) Reduction — TorchScript via C++, zero GIL
+    // 3) Reduction — TorchScript via C++
     torch::Tensor result;
     if (cfg->reduction) {
         result = cfg->reduction->run(acc, tensor);

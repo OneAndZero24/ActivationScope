@@ -1,7 +1,7 @@
 """Type stubs for the compiled C++ extension ``activationscope._C``.
 
 TorchScript reduction path — reductions are compiled via torch.jit.script,
-serialised to .pt files, and loaded by the C++ backend for zero‑GIL execution.
+serialised to .pt files, and loaded by the C++ backend.
 """
 
 from typing import Any, Dict, List

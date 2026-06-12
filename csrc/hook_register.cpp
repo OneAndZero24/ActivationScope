@@ -3,7 +3,8 @@
  *
  * Hooks are registered via Python's nn.Module.register_forward_hook() /
  * register_forward_pre_hook().  The callback is a pybind11 cpp_function
- * thunk that calls pure C++ hook_callback with captured state.
+ * thunk: it extracts the tensor under GIL, then releases the GIL and
+ * delegates to hook_callback().
  *
  * The closure captures LayerHookConfig* (for the reduction), a
  * shared_ptr<LayerAccumulator>, and SessionState* — all pre-resolved

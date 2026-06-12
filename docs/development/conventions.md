@@ -23,7 +23,7 @@ The repository enforces this style via a pre‑commit hook (`ruff format`) and C
 ## Architectural Guidance
 The library’s core design is documented in **`docs/DESIGN.md`**. Key architectural constraints include:
 - **Zero‑copy read‑back** – activations are never duplicated at the Python/C++ boundary. See the *Zero‑Copy Readback* section in the design doc.
-- **Native libtorch hooks** – C++ lambda callbacks are registered directly; no Python callables are executed per forward.
+- **Native libtorch hooks** – C++ callbacks are registered; tensor extraction under GIL, reduction in C++.
 - **Memory safety** – The session‑scoped `SessionState` owns all tensors; proper teardown is required (`tracker.remove()` or exiting the context manager).
 
 When modifying the C++ backend, always:

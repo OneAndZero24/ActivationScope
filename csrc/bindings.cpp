@@ -8,7 +8,7 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "ActivationScope C++ backend — session-scoped activation "
-              "tracking with TorchScript reductions (zero GIL)";
+              "tracking with TorchScript reductions";
 
     /* ── Session lifecycle ──────────────────────────── */
     m.def(

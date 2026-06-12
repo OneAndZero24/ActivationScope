@@ -1,8 +1,8 @@
 """ActivationScope core tracker implementation.
 
 Session-scoped, zero-copy activation tracking via a native C++ backend.
-TorchScript-compiled reductions run entirely in C++ — zero GIL, zero Python
-on the forward hot path.
+TorchScript-compiled reductions run in C++ (GIL released during reduction).
+Hook callbacks are pure C++ — no Python function calls, no dict lookups.
 """
 
 from contextlib import contextmanager
@@ -28,8 +28,8 @@ class ActivationScope:
       elements share the same TensorImpl as the C++ storage vectors.  No data
       is copied across the boundary at readback time.
 
-    * **Native C++ hooks** — forward-pass callbacks run entirely in C++ with
-      zero GIL acquisition.  Reductions are compiled via ``torch.jit.script``,
+    * **Native C++ hooks** — forward-pass callbacks run in C++ with the GIL
+      released during reduction.  Reductions are compiled via ``torch.jit.script``,
       serialised to a temporary .pt file, and loaded by the C++ backend as a
       TorchScript module that runs ``forward()`` natively.
 
@@ -157,7 +157,7 @@ class ActivationScope:
         The callable receives the current running accumulator (``None`` on the
         first call) and the latest forward-pass tensor, and returns the updated
         accumulator.  It is compiled via ``torch.jit.script``, serialised to a
-        temporary .pt file, and loaded by the C++ backend for zero‑GIL execution.
+        temporary .pt file, and loaded by the C++ backend.
 
         **State (e.g., count for running mean) must be embedded in the tensor**
         — the accumulator tensor shape is user‑defined and all metadata lives

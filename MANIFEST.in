@@ -1,0 +1,5 @@
+include README.md
+include pyproject.toml
+include setup.py
+recursive-include csrc *.cpp *.hpp
+recursive-include activationscope *.py *.pyi

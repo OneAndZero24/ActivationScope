@@ -5,19 +5,22 @@
 ARG PYTHON_VERSION=3.10
 FROM quay.io/pypa/manylinux_2_28_x86_64
 
-# Re-declare args so they are visible inside the build stage.
+# --- Re-declare ALL args after FROM so they're visible inside RUN instructions ---
+ARG PYTHON_VERSION=3.10
 ARG PYTORCH_VERSION=2.5.1
 ARG PLATFORM=cpu
 
 # manylinux is AlmaLinux 8 (RHEL-family) — use dnf, not apt-get.
-# Copy target Python and pip into /usr/local/bin so bare "python" / "pip" resolve correctly
-# for every subsequent RUN and for the CI wheel-build step on docker run.
-RUN dnf install -y gcc-c++ git && \
+# Copy target Python binaries into /usr/local/bin so bare "python"/"pip" resolve correctly
+# for every RUN instruction and for the CI docker-run wheel-build step.
+# POSIX-safe: $(echo ${PYTHON_VERSION} | tr -d '.') turns 3.10 -> 310, producing cp310-cp310 path.
+RUN CP="$(printf 'cp%s' "$(echo ${PYTHON_VERSION} | tr -d .)")" && \
+    dnf install -y gcc-c++ git && \
     dnf clean all && \
-    PY="$(echo $PYTHON_VERSION | sed 's/3\.\([0-9]\)/cp3\1-cp3\1/')" && \
-    cp /opt/python/$PY/bin/pip /usr/local/bin/ && \
-    cp /opt/python/$PY/bin/python* /usr/local/bin/ && \
+    ln -sf /opt/python/$CP-$CP/bin/pip* /usr/local/bin/ && \
+    cp /opt/python/$CP-$CP/bin/python* /usr/local/bin/ && \
     pip install --upgrade pip setuptools wheel
+
 
 WORKDIR /src
 

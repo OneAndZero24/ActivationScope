@@ -18,7 +18,6 @@ classifiers = [
     __PYTHON_CLASSIFIERS__
     "Programming Language :: C++",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Framework :: PyTorch",
 ]
 dependencies = [
     "torch >= __TORCH_VERSION__",

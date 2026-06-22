@@ -1,4 +1,9 @@
-# CI Release — build wheels via plain Docker, publish to PyPI (includes optional TestPyPI upload)
+# CI Release — build sdist and publish to PyPI (TestPyPI on `[testpypi]` push)
+#
+# For a PyTorch C++ extension the canonical distribution model is **sdist**.  pip compiles
+# the C++ against the user's local torch at install time (same as torchvision / torchaudio).
+# No Docker, no manylinux, no wheels needed here — `.docker/Dockerfile` is only used by
+# `ci-test.yml` for the multi-version test matrix.
 
 name: CI Release
 
@@ -16,36 +21,10 @@ on:
         required: false
         type: boolean
 
-env:
-  COMPOSE_DOCKER_CLI_BUILD: 1
-  DOCKER_BUILDKIT: 1
-
 jobs:
-  # ── Emit matrix JSON from matrix.yml once ────────────────────────
-  setup-matrix:
+  # ── Build sdist on the runner (no Docker needed for source tarball) ────
+  build-sdist:
     runs-on: ubuntu-latest
-    outputs:
-      matrix_json: ${{ steps.parse.outputs.matrix_json }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install PyYAML
-        run: pip install pyyaml
-
-      - name: Parse matrix into GHA strategy JSON
-        id: parse
-        run: |
-          python utils/matrix.py matrix.yml > gh_matrix.json
-          echo "matrix_json=$(cat gh_matrix.json)" >> "$GITHUB_OUTPUT"
-
-  # ── Build wheels via plain docker build + run per matrix entry ───
-  build-wheels:
-    needs: [setup-matrix]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.setup-matrix.outputs.matrix_json) }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -55,31 +34,20 @@ jobs:
       - name: Generate pyproject.toml
         run: python utils/generate-pyproject.py --matrix matrix.yml
 
-      - name: Build image
+      - name: Build sdist
         run: |
-          docker build \
-            --build-arg PYTHON_VERSION=${{ matrix.python_version }} \
-            --build-arg PYTORCH_VERSION=${{ matrix.torch_version }} \
-            --build-arg PLATFORM=cpu \
-            -t activationscope:${{ matrix.label }} \
-            -f .docker/Dockerfile .
+          python -m pip install build
+          python -m build --sdist
 
-      - name: Build wheel inside container
-        run: |
-          docker run --rm --name as-build-${{ matrix.label }} \
-            -v ${{ github.workspace }}/dist:/src/dist \
-            activationscope:${{ matrix.label }} \
-            bash -c "rm -rf /src/activationscope.egg-info /src/dist/* && pip install build && python -m build --wheel"
-
-      - name: Upload wheel artifact
+      - name: Upload sdist artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheels
-          path: dist/*.whl
+          name: dist
+          path: dist/*.tar.gz
 
   # ── Publish (only on tag or manual) ─────────────────────────────
   publish-to-pypi:
-    needs: [build-wheels]
+    needs: [build-sdist]
     if: >-
       startsWith(github.ref, 'refs/tags/v') ||
       github.event_name == 'push' ||
@@ -88,10 +56,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all wheel artifacts
+      - name: Download sdist artifact
         uses: actions/download-artifact@v4
         with:
-          name: wheels
+          name: dist
           path: dist/
 
       - name: Publish to PyPI (stable)
@@ -113,5 +81,5 @@ jobs:
       - name: Dry-run summary (no publishing)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
         run: |
-          echo "DRY-RUN — wheels downloaded in dist/ but NOT published."
+          echo "DRY-RUN — sdist downloaded in dist/ but NOT published."
           ls -lR dist/

@@ -1,26 +1,17 @@
 # ActivationScope Dockerfile
-# Uses manylinux_2_28 base to produce wheels compatible with Python packaging standards.
-# PyPI rejects bare linux_x86_64 tags; wheels built here get proper manylinux_2_28_x86_64 tags.
 
+# Stage-0 build args — only visible to FROM lines below.
 ARG PYTHON_VERSION=3.10
-FROM quay.io/pypa/manylinux_2_28_x86_64
 
-# --- Re-declare ALL args after FROM so they're visible inside RUN instructions ---
-ARG PYTHON_VERSION=3.10
+FROM python:${PYTHON_VERSION}-slim
+
+# Re-declare args so they are visible inside the build stage.
 ARG PYTORCH_VERSION=2.5.1
 ARG PLATFORM=cpu
 
-# manylinux is AlmaLinux 8 (RHEL-family) — use dnf, not apt-get.
-# Copy target Python binaries into /usr/local/bin so bare "python"/"pip" resolve correctly
-# for every RUN instruction and for the CI docker-run wheel-build step.
-# POSIX-safe: $(echo ${PYTHON_VERSION} | tr -d '.') turns 3.10 -> 310, producing cp310-cp310 path.
-RUN CP="$(printf 'cp%s' "$(echo ${PYTHON_VERSION} | tr -d .)")" && \
-    dnf install -y gcc-c++ git && \
-    dnf clean all && \
-    ln -sf /opt/python/$CP-$CP/bin/pip* /usr/local/bin/ && \
-    cp /opt/python/$CP-$CP/bin/python* /usr/local/bin/ && \
-    pip install --upgrade pip setuptools wheel
-
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git g++ build-essential && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 

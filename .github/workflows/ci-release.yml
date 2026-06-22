@@ -66,8 +66,8 @@ jobs:
 
       - name: Build wheel inside container
         run: |
-          docker run --name as-build-${{ matrix.label }} \
-            -v ${{ github.workspace }}/dist/pypip-${{ matrix.python_version }}:/src/dist \
+          docker run --rm --name as-build-${{ matrix.label }} \
+            -v ${{ github.workspace }}/dist:/src/dist \
             activationscope:${{ matrix.label }} \
             bash -c "rm -rf /src/activationscope.egg-info /src/dist/* && pip install build && python -m build --wheel"
 
@@ -75,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels
-          path: dist/**/*.whl
+          path: dist/*.whl
 
   # ── Publish (only on tag or manual) ─────────────────────────────
   publish-to-pypi:

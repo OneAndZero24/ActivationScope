@@ -96,71 +96,87 @@ Reductions are the **only Python‑level computation** that occurs inside the ho
 
 ## Advanced Example — Online SVD via Two‑Pass Stateful Reductions
 
-The `test_svd_analysis.py` module demonstrates a streaming principal‑subspace extraction using two stateful reductions:
+The `test_svd_analysis.py` module demonstrates a streaming principal‑subspace extraction using two stateful reductions. **All state is embedded in the accumulator tensor itself** — no Python dicts or closures hold metadata.
+
+### Pass 1: running sum with count in the tensor
 
 ```python
-# Pass 1: per-layer running sum (for exact mean)
+from typing import Optional
+import torch
+
+def _make_running_sum():
+    """Accumulator shape: [features..., count] where last element = sample count."""
+    def _sum_reduction(acc: Optional[torch.Tensor], new_tensor: torch.Tensor) -> torch.Tensor:
+        reshaped = _reshape_for_svd(new_tensor.float())
+        batch_count = torch.tensor(float(reshaped.size(0)))
+        if acc is None:
+            return torch.cat([reshaped.sum(dim=0), batch_count.unsqueeze(0)])
+        running_sum = acc[:-1]
+        count = acc[-1]
+        return torch.cat([running_sum.add_(reshaped.sum(dim=0)),
+                          (count + batch_count).unsqueeze(0)])
+    return _sum_reduction
+
 for name in layer_names:
-    st = {"running_sum": None, "count": 0}
-    def _make_running_sum(st_ref):
-        def _sum_reduction(acc, new_tensor):
-            reshaped = _reshape_for_svd(new_tensor.float())
-            st_ref["count"] += reshaped.shape[0]
-            if acc is None:
-                return reshaped.sum(dim=0)
-            return acc.add_(reshaped.sum(dim=0))   # in-place
-        return _sum_reduction
-    tracker.register_reduction(_make_running_sum(st), layers=[name])
+    tracker.register_reduction(_make_running_sum(), layers=[name])
+```
 
-# ... forward pass 1 ...
-# mu = running_sum / count  (computed in Python after readback)
+After forward pass 1, extract ``mu = accumulator[:-1] / accumulator[-1]`` from the readback tensor.
 
-# Pass 2: per-layer blocked covariance accumulation (O(d²) memory)
-def _make_cov_accum(d_dim, mu_vec):
-    def _cov_accum(acc, new_tensor):
+### Pass 2: covariance with mu-vector in the tensor
+
+```python
+def _make_cov_accum():
+    """Accumulator shape: [cov_matrix_flattened..., mu_vector...] — mu is the last row,
+    pre-seeded before the first forward via session_init_accumulator."""
+    def _cov_reduction(acc: Optional[torch.Tensor], new_tensor: torch.Tensor) -> torch.Tensor:
         reshaped = _reshape_for_svd(new_tensor.float())
         if acc is None:
-            acc = torch.zeros((d_dim, d_dim))
-        for start in range(0, reshaped.shape[0], chunk_size):
-            xc = reshaped[start : start + chunk_size] - mu_vec
-            acc.add_(xc.T @ xc)
-        return acc
-    return _cov_accum
-tracker2.register_reduction(_make_cov_accum(d, mu), layers=[name])
-
-# ... forward pass 2 ...
-# Sigma = final accumulator
-# U, S, Vh = torch.linalg.svd(Sigma)  → principal basis
+            return torch.zeros(1)               # placeholder, overwritten pre-seed
+        mv = acc[-1]                            # mu vector
+        cov = acc[:-1]                          # covariance matrix (view)
+        for start in range(0, reshaped.size(0), 4096):
+            xc = reshaped[start : start + 4096] - mv
+            cov.add_(xc.T @ xc)                 # in-place blockwise update
+        return torch.cat([cov, mv.unsqueeze(0)], dim=0)
+    return _cov_reduction
 ```
 
-This approach uses O(d²) memory per layer independent of the number of data rows N — ideal for very long data streams.
+This approach uses O(d²) memory per layer independent of the number of data rows N — ideal for very long data streams. See [SVD Analysis](svdanalysis.md) for the full two-pass pipeline with pre-seeding via ``session_init_accumulator``.
 
-## Advanced Example — Per‑Layer State with Closure Dictionaries
+## Advanced Example — Running Mean with Weighted Count in Tensor
 
-Since closures capture the specific layer data when created, more sophisticated patterns use per‑layer state dictionaries:
+The built-in ``mean_reduction`` shows how to encode arbitrary bookkeeping as extra tensor dimensions, matching the ``mean_reduction`` pattern from ``ActivationScope.mean_reduction()``:
 
 ```python
-layer_states: dict[str, dict] = {}
+from typing import Optional
 
-for name in layer_names:
-    st = {"running_sum": None, "count": 0}
-    layer_states[name] = st
+def weighted_mean_reduction():
+    """Accumulator shape: [features..., count] — last element tracks batch count.
+    Computes welford-style running mean without external state."""
+    def _reduce(acc: Optional[torch.Tensor], new_tensor: torch.Tensor) -> torch.Tensor:
+        batch_mean = torch.mean(new_tensor.float(), dim=0)
+        if acc is None:
+            # First call: [mean..., 1.0] — count initialised to 1
+            count_row = batch_mean[:1] * 0.0 + 1.0
+            return torch.cat([batch_mean, count_row], dim=0)
 
-    def _make_stateful(st_ref: dict):
-        def _reduce(acc, new_tensor):
-            reduced = torch.mean(new_tensor.float(), dim=0)
-            st_ref["count"] += 1
-            if acc is None:
-                return reduced
-            acc.add_(reduced)        # in-place
-            return acc               # same reference
-        return _reduce
+        count = acc[-1]
+        running_mean = acc[:-1]
+        new_count = count + 1.0
+        # Weighted update: (old_mean * old_count + new_batch_mean) / new_count
+        new_mean = (running_mean * count + batch_mean) / new_count
+        return torch.cat([new_mean, new_count.unsqueeze(0)], dim=0)
+    return _reduce
 
-    tracker.register_reduction(_make_stateful(st), layers=[name])
-
-# After forward: read per-layer external state
-for name in layer_names:
-    mu = layer_states[name]["running_sum"] / layer_states[name]["count"]
+tracker.register_reduction(weighted_mean_reduction(), layers=["fc1"])
 ```
 
-The closure dictionary pattern avoids the limitation of identity‑based `for_name` / `for_max` and allows arbitrary per‑layer metadata to be tracked alongside the reduction accumulator.
+After forward passes, the accumulator tensor holds ``[features..., count]``.  To read back:
+
+```python
+acts = tracker.activations["fc1"][0].float()
+mu = acts[:-1] / acts[-1]    # final mean = stored_mean (count already applied)
+```
+
+This pattern — encoding all metadata inside the accumulator tensor shape — is required because reductions are compiled to TorchScript graphs that run in C++ outside the GIL. Dicts, closures, and mutable Python objects cannot be used at the reduction boundary.

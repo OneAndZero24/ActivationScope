@@ -186,42 +186,49 @@ void session_register_hooks(uint64_t id, uintptr_t module_ptr,
     SessionState* state = SessionState::get(id);
     if (!state) return;
 
-    // 1) Create per-layer config
-    auto& cfg = state->layer_configs[layer_key];
-    if (!cfg) cfg = std::make_shared<LayerHookConfig>();
-    cfg->capture_dir = static_cast<CaptureDir>(capture_dir_int);
+    auto make_config = [&](const std::string& key) -> std::shared_ptr<LayerHookConfig> {
+        auto& cfg = state->layer_configs[key];
+        if (!cfg) cfg = std::make_shared<LayerHookConfig>();
+        cfg->capture_dir = static_cast<CaptureDir>(capture_dir_int);
+        CapturePolicy cap = CapturePolicy::EVERY;
+        if (state->max_batches > 0)      cap = CapturePolicy::MAX_K;
+        else if (state->sample_every > 1) cap = CapturePolicy::SAMPLE_N;
+        cfg->counter.policy        = cap;
+        cfg->counter.sample_every  = state->sample_every;
+        cfg->counter.max_batches   = state->max_batches;
+        if (!reduction_path.empty())
+            cfg->reduction = std::make_shared<Reduction>(reduction_path);
+        return cfg;
+    };
 
-    CapturePolicy cap = CapturePolicy::EVERY;
-    if (state->max_batches > 0)      cap = CapturePolicy::MAX_K;
-    else if (state->sample_every > 1) cap = CapturePolicy::SAMPLE_N;
-    cfg->counter.policy        = cap;
-    cfg->counter.sample_every  = state->sample_every;
-    cfg->counter.max_batches   = state->max_batches;
-
-    // 2) Load reduction from .pt file if non-empty
-    if (!reduction_path.empty()) {
-        cfg->reduction = std::make_shared<Reduction>(reduction_path);
-    }
-
-    // 3) Create or reuse shared accumulator (pre-seeded by session_init_accumulator)
-    std::shared_ptr<LayerAccumulator> accum;
-    {
+    auto make_accum = [&](const std::string& key) -> std::shared_ptr<LayerAccumulator> {
         std::lock_guard<std::mutex> lock(state->mutex);
-        auto it = state->accum_data.find(layer_key);
-        if (it != state->accum_data.end()) {
-            accum = it->second;  // reuse pre-seeded accumulator
-        } else {
-            accum = std::make_shared<LayerAccumulator>();
-            state->accum_data[layer_key] = accum;
-        }
+        auto it = state->accum_data.find(key);
+        if (it != state->accum_data.end()) return it->second;
+        auto a = std::make_shared<LayerAccumulator>();
+        state->accum_data[key] = a;
+        return a;
+    };
+
+    CaptureDir dir = static_cast<CaptureDir>(capture_dir_int);
+    py::gil_scoped_acquire gil;
+
+    if (dir == CaptureDir::OUTPUT || dir == CaptureDir::BOTH) {
+        std::string out_key = layer_key + ".output";
+        make_config(out_key);
+        auto accum = make_accum(out_key);
+        register_hooks_on_module(
+            reinterpret_cast<void*>(module_ptr), state, out_key,
+            static_cast<int32_t>(CaptureDir::OUTPUT), accum);
     }
 
-    // 4) Register hooks on module (GIL required for pybind11 call)
-    {
-        py::gil_scoped_acquire gil;
+    if (dir == CaptureDir::INPUT || dir == CaptureDir::BOTH) {
+        std::string in_key = layer_key + ".input";
+        make_config(in_key);
+        auto accum = make_accum(in_key);
         register_hooks_on_module(
-            reinterpret_cast<void*>(module_ptr), state, layer_key,
-            capture_dir_int, accum);
+            reinterpret_cast<void*>(module_ptr), state, in_key,
+            static_cast<int32_t>(CaptureDir::INPUT), accum);
     }
 }
 

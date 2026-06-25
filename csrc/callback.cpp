@@ -78,12 +78,16 @@ void hook_callback(SessionState*              state,
     // 1) Early-exit: capture policy (lock-free atomic)
     if (!cfg->counter.should_capture()) return;
 
-    // 2) Load running accumulator (brief mutex)
+    // 2) Load running accumulator (brief mutex); for stateful reductions
+    //    ensure it lives on the same device as the incoming tensor.
     torch::Tensor acc;
+    torch::Device tensor_dev = tensor.device();
     {
         std::lock_guard<std::mutex> lock(accum->mtx);
         const torch::Tensor* last = accum->data.last();
-        if (last) acc = *last;
+        if (last) {
+            acc = tensor_dev == last->device() ? *last : last->to(tensor_dev);
+        }
     }
 
     // 3) Reduction — TorchScript via C++

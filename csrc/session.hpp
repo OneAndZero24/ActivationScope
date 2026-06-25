@@ -52,7 +52,7 @@ struct SessionState {
     CaptureMode     capture_mode            = CaptureMode::REFERENCE;
     std::string     session_dir;
 
-    std::unordered_map<std::string, LayerHookConfig>               layer_configs;
+    std::unordered_map<std::string, std::shared_ptr<LayerHookConfig>> layer_configs;
     std::unordered_map<std::string, std::shared_ptr<LayerAccumulator>> accum_data;
     std::unordered_map<std::string, std::vector<std::string>>      disk_paths;
 

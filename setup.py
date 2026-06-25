@@ -32,7 +32,7 @@ cpp_extension = CppExtension(
 
 setup(
     name="activationscope",
-    version="0.1.1",
+    version="0.1.2",
     packages=["activationscope"],
     ext_modules=[cpp_extension],
     cmdclass={"build_ext": BuildExtension},

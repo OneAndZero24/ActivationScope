@@ -46,7 +46,7 @@ def generate(template: str, combos: List[Dict[str, str]]) -> str:
     text = text.replace("__TORCH_VERSION__", torch_floor)
     text = text.replace(
         "__VERSION__",
-        os.environ.get("ASCOPE_VERSION", "0.1.1"),
+        os.environ.get("ASCOPE_VERSION", "0.1.2"),
     )
     text = text.replace("__PYTHON_CLASSIFIERS__", classifiers + ",\n")
 

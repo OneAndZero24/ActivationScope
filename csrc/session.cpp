@@ -145,7 +145,7 @@ void session_clear(uint64_t id) {
     for (auto& [key, accum] : state->accum_data)
         accum->data.clear();
     for (auto& [key, cfg] : state->layer_configs)
-        cfg.counter.reset();
+        cfg->counter.reset();
 }
 
 void session_detach_hooks(uint64_t id) {
@@ -188,18 +188,19 @@ void session_register_hooks(uint64_t id, uintptr_t module_ptr,
 
     // 1) Create per-layer config
     auto& cfg = state->layer_configs[layer_key];
-    cfg.capture_dir = static_cast<CaptureDir>(capture_dir_int);
+    if (!cfg) cfg = std::make_shared<LayerHookConfig>();
+    cfg->capture_dir = static_cast<CaptureDir>(capture_dir_int);
 
     CapturePolicy cap = CapturePolicy::EVERY;
     if (state->max_batches > 0)      cap = CapturePolicy::MAX_K;
     else if (state->sample_every > 1) cap = CapturePolicy::SAMPLE_N;
-    cfg.counter.policy        = cap;
-    cfg.counter.sample_every  = state->sample_every;
-    cfg.counter.max_batches   = state->max_batches;
+    cfg->counter.policy        = cap;
+    cfg->counter.sample_every  = state->sample_every;
+    cfg->counter.max_batches   = state->max_batches;
 
     // 2) Load reduction from .pt file if non-empty
     if (!reduction_path.empty()) {
-        cfg.reduction = std::make_shared<Reduction>(reduction_path);
+        cfg->reduction = std::make_shared<Reduction>(reduction_path);
     }
 
     // 3) Create or reuse shared accumulator (pre-seeded by session_init_accumulator)

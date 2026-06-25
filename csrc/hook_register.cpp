@@ -38,7 +38,11 @@ void register_hooks_on_module(void* module_py_ptr,
         py::handle(reinterpret_cast<PyObject*>(module_py_ptr)));
 
     /* Resolve LayerHookConfig* once — never looked up on the hot path */
-    LayerHookConfig* cfg = &state->layer_configs[layer_key];
+    std::shared_ptr<LayerHookConfig> cfg = state->layer_configs[layer_key];
+    if (!cfg) {
+        cfg = std::make_shared<LayerHookConfig>();
+        state->layer_configs[layer_key] = cfg;
+    }
 
     /* ── Output hook (register_forward_hook) ────────────────────
      * GIL discipline: tensor extraction (pybind11 casts) requires GIL.
@@ -63,7 +67,7 @@ void register_hooks_on_module(void* module_py_ptr,
                 // 2) Release GIL for the C++/TorchScript hot path
                 {
                     py::gil_scoped_release release;
-                    hook_callback(state, cfg, accum, layer_key, tensor);
+                    hook_callback(state, cfg.get(), accum, layer_key, tensor);
                 }
                 // GIL re-acquired here (scope exit)
             });
@@ -92,7 +96,7 @@ void register_hooks_on_module(void* module_py_ptr,
                 // 2) Release GIL for the C++/TorchScript hot path
                 {
                     py::gil_scoped_release release;
-                    hook_callback(state, cfg, accum, layer_key, tensor);
+                    hook_callback(state, cfg.get(), accum, layer_key, tensor);
                 }
                 // GIL re-acquired here (scope exit)
             });

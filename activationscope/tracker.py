@@ -183,13 +183,15 @@ class ActivationScope:
         if dummy_acc is None:
             dummy_acc = torch.randn(64, dtype=torch.float32)
 
-        reduction_path = export_reduction(fn, dummy_acc, dummy_tensor)
-        self._temp_files.append(reduction_path)
-
         if layers is None:
+            reduction_path = export_reduction(fn, dummy_acc, dummy_tensor)
+            self._temp_files.append(reduction_path)
             self._global_reduction_path = reduction_path
         else:
-            self._reductions.append((reduction_path, layers))
+            for layer in layers:
+                reduction_path = export_reduction(fn, dummy_acc, dummy_tensor)
+                self._temp_files.append(reduction_path)
+                self._reductions.append((reduction_path, [layer]))
 
     # ── Built-in reduction factories ──────────────────────────────
 
